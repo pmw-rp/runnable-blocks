@@ -165,6 +165,14 @@ ln -s "$PWD" "/path/to/vault/.obsidian/plugins/runnable-blocks"
 
 Then enable **Runnable Blocks** under Settings → Community plugins, and open `example.md` (copy it into the vault) to try it out. The plugin is plain JavaScript with no build step. Edit `main.js` and reload the plugin.
 
+## Tests
+
+```sh
+tests/run.sh
+```
+
+This runs `tests/plugin.test.js` with macOS's built-in JavaScript (`osascript -l JavaScript`), so it needs no Node or npm. Small stand-ins replace Obsidian's API, Node's `crypto`, `fs` and `path`, and YAML. The tests cover parsing blocks and headers, editing headers, evaluating checks, block ids and file-block syncing, partly against `example.md`. They don't cover rendering in Obsidian. The script prints any failures and a summary, and exits non-zero if anything failed.
+
 ## Security
 
 `run` blocks only run when you click ▶ or use **Run all**. Editable file blocks run their `check` commands as you edit them, and when their note opens (unless you turn that setting off). Everything runs with your full user permissions, so read notes from other people before opening them with this plugin on.
