@@ -113,10 +113,10 @@ const fakeFs = {
   watch: () => ({ close() {} }),
 };
 class FileSystemAdapter { getBasePath() { return '/vault'; } }
-const req = (m) => (m === 'obsidian' ? { Plugin: Stub, PluginSettingTab: Stub, MarkdownRenderChild: Stub, TFile, MarkdownView, FileSystemAdapter, parseYaml, stringifyYaml, Notice: class {} }
+const req = (m) => (m === 'obsidian' ? { Plugin: Stub, PluginSettingTab: Stub, MarkdownRenderChild: Stub, TFile, MarkdownView, FileSystemAdapter, parseYaml, stringifyYaml, Notice: class { setMessage() {} hide() {} } }
   : m === 'crypto' ? fakeCrypto : m === 'path' ? fakePath : m === 'fs' ? fakeFs : {});
 const api = new Function('require', 'module', 'setTimeout', 'clearTimeout', 'window', src + `
-return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withContent, replaceBody, normalize, evaluate, hasChecks, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
+return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withContent, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
 
 const out = [];
 const eq = (name, a, b) => {
@@ -178,10 +178,10 @@ const P = new api.Plugin();
 P.settings = { autoIds: true, defaultLang: 'bash' };
 P.idJobs = new Map();
 const metas = P.metasFor(note).map(({ meta }) => meta);
-eq('demo block count', metas.length, 20);
-eq('demo kinds', metas.map((m) => m.kind[0]).join(''), 'rrrrrrfffff' + 'r'.repeat(9));
+eq('demo block count', metas.length, 23);
+eq('demo kinds', metas.map((m) => m.kind[0]).join(''), 'rrrrrrfffff' + 'r'.repeat(10) + 'fr');
 eq('no warnings in demo', metas.flatMap((m) => m.warnings), []);
-eq('callout block', [metas[19].lang, metas[19].code], ['js', 'console.log([1, 2, 3].map(n => n * n).join(" "))']);
+eq('callout block', [metas[metas.length - 1].lang, metas[metas.length - 1].code], ['js', 'console.log([1, 2, 3].map(n => n * n).join(" "))']);
 eq('exact output expect', metas[1].expect.output, 'Hello from Obsidian');
 eq('command md5 expect', metas[5].expect, { output: null, md5: '8977ecbb8cb82d77fb091c7a7f186163', commandMd5: 'e69b4f45ed0327caa6fab84ce09cc4bb' });
 eq('editable + placeholder', [metas[4].editable, metas[4].code], [true, '# your command here']);
@@ -193,7 +193,7 @@ eq('expect content', metas[8].expect, { content: 'MODE=production', md5: null })
 eq('multi-line check', metas[10].check.run, 'import json, os\njson.load(open(os.environ["FILE"]))\nprint("valid JSON")');
 eq('timeout', metas[13].timeout, 2);
 eq('go example', [metas[14].lang, metas[14].expect.output], ['go', 'Hello from Go: 5050']);
-eq('hasChecks', metas.map(api.hasChecks).map(Number).join(''), '01111111111000100000');
+eq('hasChecks', metas.map(api.hasChecks).map(Number).join(''), '01111111111000100000000');
 const sc = P.makeMeta('file', 'path: a.txt\nexpect: hi\ncheck: cat "$FILE"\n---\nhi');
 eq('shorthands', [sc.expect.content, sc.check.run], ['hi', 'cat "$FILE"']);
 eq('check without run warns', P.makeMeta('file', 'path: a\ncheck:\n  lang: bash\n---\nx').warnings, ['"check" needs a "run" command.']);
@@ -225,8 +225,43 @@ eq('file content pass', F(metas[8], { content: 'MODE=production' }).status, 'pas
 eq('file validator exit', F(metas[10], { check: { stdout: '', exitCode: 1 } }).items, [{ label: 'check', ok: false, detail: 'exited 1' }]);
 eq('file no checks', F(P.makeMeta('file', 'path: x\n---\ny'), {}).label, 'Written');
 
+// Saved results: what goes into result:, and back
+const runMeta = P.makeMeta('run', 'id: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\nlang: bash\nexpect:\n  output: hello\n---\necho hello');
+const live = { done: true, startedAt: Date.parse('2026-11-01T10:00:00Z'), durationMs: 42, exitCode: 0, stdout: 'hello\n',
+  chunks: [{ stream: 'stdout', text: 'hello\n' }, { stream: 'stderr', text: 'a warning\n' }], outputHash: 'h:hello', cmdHash: 'h:echo hello' };
+const saved = api.savedResult(runMeta, live);
+eq('saved run result', saved, { ran: '2026-11-01T10:00:00.000Z', 'duration-ms': 42, exit: 0, 'output-md5': 'h:hello', 'command-md5': 'h:echo hello', stdout: 'hello', stderr: 'a warning' });
+const back = api.loadResult(runMeta, api.splitHeader(api.setHeaderEntry('lang: bash\n---\nx', 'result', saved)).header.result);
+eq('loaded run result', [back.exitCode, back.stdout, back.chunks.map((c) => c.stream), back.durationMs, back.saved], [0, 'hello', ['stdout', 'stderr'], 42, true]);
+eq('a loaded result evaluates the same', api.evaluate(runMeta, back).status, api.evaluate(runMeta, live).status);
+const big = 'x'.repeat(12000) + '\nhello';
+const bigMeta = P.makeMeta('run', 'id: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\nlang: bash\nexpect:\n  output: ' + JSON.stringify(big) + '\n---\nprint');
+const bigSaved = api.savedResult(bigMeta, Object.assign({}, live, { stdout: big, chunks: [{ stream: 'stdout', text: big }], outputHash: 'h:' + big }));
+eq('long output is cut', [bigSaved.stdout.length, bigSaved.truncated], [10000, true]);
+eq('cut output still passes its exact check, by hash', api.evaluate(bigMeta, api.loadResult(bigMeta, bigSaved)).status, 'pass');
+const errSaved = api.savedResult(runMeta, Object.assign({}, live, { error: 'Timed out after 2 s', timedOut: true, exitCode: null }));
+eq('a timeout is saved and loaded', api.evaluate(runMeta, api.loadResult(runMeta, errSaved)).label, 'Timed out');
+const fileMeta = P.makeMeta('file', 'id: ffffffff-ffff-4fff-8fff-ffffffffffff\npath: a.yaml\ncheck:\n  run: x\n  expect: "3"\n---\nreplicas: 3');
+const fileLive = { done: true, startedAt: 1, durationMs: 5, exitCode: 0, outputHash: 'h:replicas: 3', content: 'replicas: 3', check: { stdout: '3\n', stderr: '', exitCode: 0 } };
+const fileSaved = api.savedResult(fileMeta, fileLive);
+eq('saved file result has no check output, only its hash', [fileSaved['content-md5'], fileSaved.check], ['h:replicas: 3', { exit: 0, 'output-md5': 'h:3' }]);
+eq('a loaded file result passes its check', api.evaluate(fileMeta, api.loadResult(fileMeta, fileSaved)).status, 'pass');
+
+// Re-render heights are looked up by the id in the block's raw text
+P.heights = new Map();
+eq('key from raw text, with an id', P.keyForSource('n.md', 'id: ' + 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' + '\nlang: bash\n---\nls'), P.keyFor('n.md', { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }));
+eq('no key from raw text without an id', P.keyForSource('n.md', 'lang: bash\n---\nls'), null);
+eq('no key from raw text with a short id', P.keyForSource('n.md', 'id: k3f9qz\n---\nls'), null);
+
+// Revert commands
+eq('revert as a command', P.makeMeta('run', 'lang: python\nrevert: rm -rf x\n---\nprint(1)').revert, { lang: 'python', run: 'rm -rf x' });
+eq('revert as a map', P.makeMeta('run', 'lang: bash\nrevert:\n  lang: python\n  run: print(2)\n---\nls').revert, { lang: 'python', run: 'print(2)' });
+eq('file block revert uses the default language', P.makeMeta('file', 'path: a.txt\nrevert: rm -f "$FILE"\n---\nx').revert, { lang: 'bash', run: 'rm -f "$FILE"' });
+eq('revert without run warns', P.makeMeta('run', 'lang: bash\nrevert:\n  lang: bash\n---\nls').warnings, ['"revert" needs a "run" command.']);
+eq('no revert', P.makeMeta('run', 'lang: bash\n---\nls').revert, null);
+
 // Dependencies, using the demo's four dependency blocks
-Object.assign(P, { results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map(), noteIndex: new Map() });
+Object.assign(P, { reverts: new Map(), revertProcs: new Map(), results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map(), noteIndex: new Map() });
 const dm = P.metasFor(note, 'demo.md').map(({ meta }) => meta);
 const [dA, dB, dC, dD] = dm.slice(15, 19);
 const waitingFor = (meta) => P.dependencyState('demo.md', meta).waiting.map((w) => w.reason);
@@ -271,7 +306,7 @@ P.app = { workspace: { getLeavesOfType: () => [] }, vault: {
   getAbstractFileByPath: () => new TFile(),
   process: (f, fn) => { disk = fn(disk); return Promise.resolve(disk); },
   cachedRead: () => Promise.resolve(disk) } };
-Object.assign(P, { results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map() });
+Object.assign(P, { reverts: new Map(), revertProcs: new Map(), results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map() });
 const sync = out.length;
 const original = disk;
 const second = () => P.metasFor(disk)[1].meta;
@@ -310,7 +345,7 @@ gated.then((res) => {
   P.app.vault.adapter = new FileSystemAdapter();
   P.app.vault.configDir = '.obsidian';
   P.settings.cwdMode = 'vault';
-  Object.assign(P, { results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map() });
+  Object.assign(P, { reverts: new Map(), revertProcs: new Map(), results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map() });
   const fm = () => P.metasFor(disk)[0].meta;
   const key = P.keyFor('n.md', fm());
   P.syncFromDisk('n.md', fm(), { onLoad: true });
@@ -345,7 +380,81 @@ gated.then((res) => {
   }).then(() => new Promise((r) => r())).then(() => {
     eq('reset rewrites file', files['/vault/demo/a.yaml'], 'replicas: 1\n');
     eq('reset removes learner from note', fm().learner, null);
-    eq('note body after reset', disk, '```file\nid: ' + U1 + '\npath: demo/a.yaml\neditable: true\n---\nreplicas: 1\n```\n');
+    eq('reset saves the result of writing the original', [fm().saved && fm().saved['content-md5'], fm().code], ['h:replicas: 1', 'replicas: 1']);
+    eq('note body after reset', disk.replace(/result:\n(  .*\n)+/, ''), '```file\nid: ' + U1 + '\npath: demo/a.yaml\neditable: true\n---\nreplicas: 1\n```\n');
+  });
+}).then(() => {
+  // Results saved in the note: after a run, and still there after a restart
+  disk = '```run\nid: ' + U1 + '\nlang: bash\n---\necho hi\n```\n```run\nid: 22222222-2222-4222-8222-222222222222\ndepends-on: ' + U1 + '\n---\nls\n```\n';
+  P.results = new Map();
+  const first = () => P.metasFor(disk, 'n.md')[0].meta;
+  const res = { done: true, startedAt: 1000, durationMs: 7, exitCode: 0, stdout: 'hi\n', chunks: [{ stream: 'stdout', text: 'hi\n' }], outputHash: 'h:hi', cmdHash: 'h:echo hi' };
+  return P.persistResult('n.md', first(), res).then(() => {
+    eq('the result is saved in the note', [first().saved && first().saved.stdout, first().saved && first().saved.exit], ['hi', 0]);
+    eq('the code is untouched', first().code, 'echo hi');
+    P.results = new Map();
+    const restored = P.resultFor('n.md', first());
+    eq('after a restart the saved result is used', [restored && restored.stdout, restored && api.evaluate(first(), restored).status], ['hi', 'ok']);
+    eq('a saved result counts for dependencies', P.dependencyState('n.md', P.metasFor(disk, 'n.md')[1].meta).blocked, false);
+    return P.clearBlock('n.md', first());
+  }).then(() => {
+    eq('clearing removes the result from the note', [first().saved, P.resultFor('n.md', first())], [null, null]);
+    eq('and blocks dependents again', P.dependencyState('n.md', P.metasFor(disk, 'n.md')[1].meta).blocked, true);
+  });
+}).then(() => {
+  // Revert and reset. Commands don't really run: spawnScript is replaced, and records what it was given.
+  const UA = '33333333-3333-4333-8333-333333333333';
+  const UB = '44444444-4444-4444-8444-444444444444';
+  disk = '```run\nid: ' + UA + '\nlang: bash\nrevert: rm -rf demo/a\n---\nmkdir -p demo/a\n```\n'
+    + '```run\nid: ' + UB + '\nlang: bash\ndepends-on: ' + UA + '\nrevert: rm -f demo/a/b\n---\ntouch demo/a/b\n```\n';
+  Object.assign(P, { results: new Map(), reverts: new Map(), revertProcs: new Map(), procs: new Map() });
+  const ran = [];
+  let exitCode = 0;
+  P.spawnScript = (lang, code, file, timeout, onData) => {
+    ran.push(code);
+    onData('stdout', 'reverting ' + code + '\n');
+    return { promise: Promise.resolve({ exitCode }), kill() {} };
+  };
+  const m = () => P.metasFor(disk, 'n.md').map(({ meta }) => meta);
+  const done = (stdout) => ({ done: true, startedAt: 1, durationMs: 1, exitCode: 0, stdout, chunks: [], outputHash: 'h', cmdHash: 'h' });
+  P.results.set(P.keyFor('n.md', m()[0]), done('a'));
+  P.results.set(P.keyFor('n.md', m()[1]), done('b'));
+  return P.persistResult('n.md', m()[0], P.results.get(P.keyFor('n.md', m()[0]))).then(() => {
+    eq('nothing to revert before a run', P.revertBlocker('n.md', P.makeMeta('run', 'id: 55555555-5555-4555-8555-555555555555\nrevert: x\n---\ny')), "it hasn't run");
+    eq('a dependent with a result blocks the revert', /first, which depend on it/.test(P.revertBlocker('n.md', m()[0])), true);
+    return P.revertBlock('n.md', m()[0]);
+  }).then((ok) => {
+    eq('a blocked revert does nothing', [ok, ran.length], [false, 0]);
+    exitCode = 1;
+    return P.revertBlock('n.md', m()[1]);
+  }).then((ok) => {
+    eq('a failed revert keeps the result', [ok, !!P.resultFor('n.md', m()[1]), P.reverts.get(P.keyFor('n.md', m()[1])).ok], [false, true, false]);
+    exitCode = 0;
+    return P.revertBlock('n.md', m()[1]);
+  }).then((ok) => {
+    eq('a revert runs the revert command', ran[ran.length - 1], 'rm -f demo/a/b');
+    eq('a successful revert removes the result', [ok, P.resultFor('n.md', m()[1])], [true, null]);
+    eq('the revert output is kept to show', P.reverts.get(P.keyFor('n.md', m()[1])).chunks[0].text, 'reverting rm -f demo/a/b\n');
+    eq('once its dependent is reverted, a block can be reverted', P.revertBlocker('n.md', m()[0]), null);
+    return P.revertBlock('n.md', m()[0]);
+  }).then(() => {
+    eq('a revert removes the saved result from the note', [m()[0].saved, m()[1].saved], [null, null]);
+    eq('dependents are blocked again', P.dependencyState('n.md', m()[1]).blocked, true);
+    return P.resetBlock('n.md', m()[0]);
+  }).then((ok) => {
+    eq('reset clears the revert output too', [ok, P.reverts.has(P.keyFor('n.md', m()[0]))], [true, false]);
+    // Reset without a revert command just clears; with dependents that have results, it refuses
+    disk = disk.replace('revert: rm -rf demo/a\n', '');
+    P.results.set(P.keyFor('n.md', m()[0]), done('a'));
+    P.results.set(P.keyFor('n.md', m()[1]), done('b'));
+    return P.resetBlock('n.md', m()[0]);
+  }).then((ok) => {
+    eq('reset refuses while a dependent has a result', [ok, !!P.resultFor('n.md', m()[0])], [false, true]);
+    ran.length = 0;
+    return P.resetAll({ path: 'n.md' });
+  }).then(() => {
+    eq('reset all works bottom up', ran, ['rm -f demo/a/b']);
+    eq('reset all clears every block', [P.resultFor('n.md', m()[0]), P.resultFor('n.md', m()[1])], [null, null]);
   });
 }).then(() => {
   console.log(out.slice(sync).join('\n'));

@@ -6,7 +6,6 @@ const {
   Setting,
   Notice,
   Menu,
-  MarkdownRenderer,
   MarkdownRenderChild,
   FileSystemAdapter,
   TFile,
@@ -63,7 +62,10 @@ const BLOCK_RE = /^(run|file)(\s|$)/;
 
 // Settings a block's YAML header may use. A header only counts as one if it uses at least one of
 // these, so a file whose own content has a "---" line isn't mistaken for a header.
-const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'timeout', 'depends-on', 'expect', 'check', 'learner']);
+const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'timeout', 'depends-on', 'revert', 'expect', 'check', 'learner', 'result']);
+
+// Saved output is cut to this many characters per stream; checks then compare hashes instead.
+const MAX_SAVED_OUTPUT = 10000;
 
 // Files bigger than this aren't read back into an editable block.
 const MAX_SYNC_BYTES = 1024 * 1024;
@@ -272,7 +274,9 @@ function evaluate(meta, res) {
     return { status: 'error', label: res.timedOut ? 'Timed out' : res.stopped ? 'Stopped' : 'Error', items };
   }
   const { expect } = meta;
-  if (expect.output !== null) add('output', normalize(res.stdout) === expect.output);
+  if (expect.output !== null) {
+    add('output', res.stdout != null && !res.truncated ? normalize(res.stdout) === expect.output : res.outputHash === md5(expect.output));
+  }
   if (expect.md5) {
     const ok = res.outputHash === expect.md5;
     add('output MD5', ok, ok ? null : `got ${res.outputHash.slice(0, 8)}…`);
@@ -295,20 +299,85 @@ function evaluateFile(meta, res) {
     return { status: 'error', label, items };
   }
   const { expect, check } = meta;
-  if (expect.content !== null) add('content', res.content === expect.content);
+  if (expect.content !== null) add('content', res.content != null ? res.content === expect.content : res.outputHash === md5(expect.content));
   if (expect.md5) add('content MD5', res.outputHash === expect.md5);
   if (check && res.check) {
-    const out = normalize(res.check.stdout);
+    // A saved check result has only its output's hash
+    const outHash = res.check.stdout != null ? md5(normalize(res.check.stdout)) : res.check.outputHash;
     if (res.check.exitCode !== 0) add('check', false, `exited ${res.check.exitCode}`);
     else if (check.expect.output === null && !check.expect.md5) add('check', true);
     else {
-      if (check.expect.output !== null) add('check output', out === check.expect.output);
-      if (check.expect.md5) add('check MD5', md5(out) === check.expect.md5);
+      if (check.expect.output !== null) add('check output', outHash === md5(check.expect.output));
+      if (check.expect.md5) add('check MD5', outHash === check.expect.md5);
     }
   }
   if (items.some((i) => !i.ok)) return { status: 'fail', label: 'Fail', items };
   if (items.length) return { status: 'pass', label: 'Pass', items };
   return { status: 'ok', label: 'Written', items };
+}
+
+// What gets saved in a block's `result:` header entry. Output is cut to MAX_SAVED_OUTPUT
+// characters per stream; the hashes cover all of it, so checks still evaluate.
+function savedResult(meta, res) {
+  const cut = (text) => (text && text.length > MAX_SAVED_OUTPUT ? text.slice(0, MAX_SAVED_OUTPUT) : text);
+  const saved = { ran: new Date(res.startedAt || Date.now()).toISOString(), 'duration-ms': res.durationMs || 0 };
+  if (res.error) saved.error = res.error;
+  if (res.timedOut) saved['timed-out'] = true;
+  if (res.stopped) saved.stopped = true;
+  if (meta.kind === 'file') {
+    saved['content-md5'] = res.outputHash;
+    if (res.check) {
+      saved.check = { exit: res.check.exitCode, 'output-md5': md5(normalize(res.check.stdout || '')) };
+      if (res.check.error) saved.check.error = res.check.error;
+      if (res.check.timedOut) saved.check['timed-out'] = true;
+    }
+    return saved;
+  }
+  const stdout = res.stdout || '';
+  const stderr = res.chunks.filter((c) => c.stream === 'stderr').map((c) => c.text).join('');
+  Object.assign(saved, { exit: res.exitCode, 'output-md5': res.outputHash, 'command-md5': res.cmdHash });
+  if (stdout) saved.stdout = cut(normalize(stdout));
+  if (stderr) saved.stderr = cut(normalize(stderr));
+  if (stdout.length > MAX_SAVED_OUTPUT || stderr.length > MAX_SAVED_OUTPUT) saved.truncated = true;
+  return saved;
+}
+
+// Turns a saved `result:` back into the shape of a live result.
+function loadResult(meta, saved) {
+  const res = {
+    done: true, saved: true,
+    startedAt: Date.parse(saved.ran) || null,
+    durationMs: Number(saved['duration-ms']) || 0,
+    error: saved.error || undefined,
+    timedOut: saved['timed-out'] === true,
+    stopped: saved.stopped === true,
+  };
+  if (meta.kind === 'file') {
+    return Object.assign(res, {
+      exitCode: 0, chunks: [], stdout: '', outputHash: String(saved['content-md5'] || ''), cmdHash: String(saved['content-md5'] || ''),
+      check: saved.check ? {
+        exitCode: saved.check.exit, outputHash: String(saved.check['output-md5'] || ''),
+        error: saved.check.error || undefined, timedOut: saved.check['timed-out'] === true,
+      } : undefined,
+    });
+  }
+  const stdout = saved.stdout == null ? '' : String(saved.stdout);
+  const stderr = saved.stderr == null ? '' : String(saved.stderr);
+  return Object.assign(res, {
+    exitCode: saved.exit == null ? null : Number(saved.exit),
+    stdout, truncated: saved.truncated === true,
+    chunks: [{ stream: 'stdout', text: stdout }, { stream: 'stderr', text: stderr }].filter((c) => c.text),
+    outputHash: String(saved['output-md5'] || ''), cmdHash: String(saved['command-md5'] || ''),
+  });
+}
+
+// When a result was produced: a time today, or a date and time.
+function formatRan(time) {
+  if (!time) return '';
+  const when = new Date(time);
+  const sameDay = when.toDateString() === new Date().toDateString();
+  return sameDay ? when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : when.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 function shellQuote(s) {
@@ -343,6 +412,11 @@ class RunBlock extends MarkdownRenderChild {
   async onload() {
     const el = this.containerEl;
     el.addClass('run-block');
+    // When Obsidian re-renders this block (say, because its result was just saved), the new widget
+    // starts empty and fills in asynchronously. Holding it at the old widget's height until then
+    // stops everything below it jumping up and back down.
+    const heldHeight = this.plugin.heights.get(this.plugin.keyForSource(this.ctx.sourcePath, this.source));
+    if (heldHeight) el.style.minHeight = `${heldHeight}px`;
     // Section info tells identical blocks apart; it can be missing at processor time, so ask again.
     const section = this.section || this.ctx.getSectionInfo(el);
     this.meta = await this.plugin.resolveMeta(this.ctx.sourcePath, this.source, section, this.kind);
@@ -372,7 +446,7 @@ class RunBlock extends MarkdownRenderChild {
     bar.createDiv({ cls: 'run-block-spacer' });
     if (this.meta.editable) {
       this.editedEl = bar.createSpan({ cls: 'run-block-edited', text: 'edited' });
-      this.resetBtn = this.button(bar, 'rotate-ccw', 'Reset to original', () => (this.synced
+      this.resetBtn = this.button(bar, 'rotate-ccw', 'Restore the original code', () => (this.synced
         ? this.plugin.resetFile(this.ctx.sourcePath, this.meta)
         : this.plugin.setDraft(this.key, this.meta, null)));
       // Synced file blocks save themselves into the note; run blocks are saved on request.
@@ -381,8 +455,9 @@ class RunBlock extends MarkdownRenderChild {
           this.plugin.saveDraft(this.ctx.sourcePath, this.meta));
       }
     }
+    if (this.meta.revert) this.revertBtn = this.button(bar, 'undo-2', 'Revert', () => this.plugin.revertBlock(this.ctx.sourcePath, this.meta));
     this.button(bar, 'hash', 'Block id and hashes', (evt) => this.hashMenu(evt));
-    if (!isFile) this.button(bar, 'eraser', 'Clear output', () => this.plugin.clear(this.key));
+    this.resetBlockBtn = this.button(bar, 'eraser', 'Reset', () => this.plugin.resetBlock(this.ctx.sourcePath, this.meta));
 
     // Shows which dependencies a blocked block is waiting for
     this.waitEl = el.createDiv({ cls: 'run-block-waiting' });
@@ -392,10 +467,7 @@ class RunBlock extends MarkdownRenderChild {
     if (this.meta.editable) {
       this.renderEditor(codeEl);
     } else {
-      const longestTicks = Math.max(2, ...(this.meta.code.match(/`+/g) || []).map((t) => t.length));
-      const fence = '`'.repeat(longestTicks + 1);
-      await this.plugin.renderMarkdown(`${fence}${this.meta.lang}\n${this.meta.code}\n${fence}`, codeEl, this.ctx.sourcePath, this);
-      if (this.unloaded) return;
+      this.renderCode(codeEl);
     }
 
     this.outEl = el.createDiv({ cls: 'run-block-output' });
@@ -406,6 +478,10 @@ class RunBlock extends MarkdownRenderChild {
       this.plugin.validateOnLoad(this.ctx.sourcePath, this.meta);
     }
     this.render();
+    window.requestAnimationFrame(() => {
+      el.style.minHeight = '';
+      if (!this.unloaded) this.rememberHeight();
+    });
   }
 
   onunload() {
@@ -431,6 +507,23 @@ class RunBlock extends MarkdownRenderChild {
   // An editable block is a <textarea> laid over a copy of its text, highlighted with Obsidian's
   // Prism. The textarea's own text is transparent, so you see the highlighted copy, with the
   // textarea's caret and selection on top. The copy sets the height, so the textarea always fits.
+  // Read-only code, highlighted synchronously so a re-rendered block never shows without it.
+  renderCode(parent) {
+    const lang = PRISM_LANGS[this.meta.lang] || this.meta.lang;
+    const pre = parent.createEl('pre', { cls: `language-${lang}` });
+    const code = pre.createEl('code', { cls: `language-${lang}` });
+    const paint = () => this.plugin.highlight(code, this.meta.code, lang);
+    paint();
+    if (!this.plugin.prism) this.plugin.prismReady.then(() => { if (!this.unloaded) paint(); });
+    const copy = pre.createEl('button', { cls: 'copy-code-button', attr: { 'aria-label': 'Copy' } });
+    setIcon(copy, 'copy');
+    copy.addEventListener('click', (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      navigator.clipboard.writeText(this.meta.code).then(() => new Notice('Copied'));
+    });
+  }
+
   renderEditor(parent) {
     const wrap = parent.createDiv({ cls: 'run-block-editor-wrap' });
     const lang = PRISM_LANGS[this.meta.lang] || this.meta.lang;
@@ -439,23 +532,25 @@ class RunBlock extends MarkdownRenderChild {
     const ta = wrap.createEl('textarea', { cls: 'run-block-editor', attr: { spellcheck: 'false' } });
     ta.value = this.plugin.currentCode(this.key, this.meta);
     this.editor = ta;
+    // Saving a result re-renders the block; if you were typing in it, carry on where you were.
+    const refocus = this.plugin.refocus;
+    if (refocus && refocus.key === this.key) {
+      this.plugin.refocus = null;
+      window.requestAnimationFrame(() => {
+        ta.focus({ preventScroll: true });
+        ta.setSelectionRange(refocus.start, refocus.end);
+      });
+    }
 
-    let prism = null;
     const paint = () => {
       const text = ta.value;
-      const grammar = prism && prism.languages[lang];
-      code.empty();
-      if (grammar) code.appendChild(sanitizeHTMLToDom(prism.highlight(text, grammar, lang)));
-      else code.setText(text);
+      this.plugin.highlight(code, text, lang);
       // A trailing newline needs something after it, or the copy comes out a line short.
       if (text === '' || text.endsWith('\n')) code.appendText(' ');
     };
     this.fitEditor = paint;
     paint();
-    loadPrism().then((loaded) => {
-      prism = loaded;
-      if (!this.unloaded) paint();
-    }).catch(() => {});
+    if (!this.plugin.prism) this.plugin.prismReady.then(() => { if (!this.unloaded) paint(); });
 
     // Keep Live Preview from treating clicks and keys in the editor as edits to the note itself.
     for (const type of ['mousedown', 'click', 'keydown', 'keyup', 'keypress', 'beforeinput', 'paste', 'cut', 'copy']) {
@@ -484,7 +579,7 @@ class RunBlock extends MarkdownRenderChild {
   }
 
   hashMenu(evt) {
-    const res = this.plugin.results.get(this.key);
+    const res = this.plugin.resultFor(this.ctx.sourcePath, this.meta);
     const cmdHash = md5(this.plugin.currentCode(this.key, this.meta));
     const copy = (hash) => navigator.clipboard.writeText(hash).then(() => new Notice(`Copied ${hash}`));
     const pin = (keyPath, hash) => this.plugin.pinValue(this.ctx.sourcePath, this.meta, keyPath, hash);
@@ -507,7 +602,7 @@ class RunBlock extends MarkdownRenderChild {
         menu.addSeparator();
         const check = res && res.done && res.check;
         if (check && !check.error) {
-          const checkHash = md5(normalize(check.stdout));
+          const checkHash = check.stdout != null ? md5(normalize(check.stdout)) : check.outputHash;
           menu.addItem((i) => i.setTitle(`Copy check output MD5 (${checkHash.slice(0, 8)}…)`).setIcon('copy')
             .onClick(() => copy(checkHash)));
           menu.addItem((i) => i.setTitle('Pin check output MD5 to block (check.expect.md5)').setIcon('pin')
@@ -540,12 +635,61 @@ class RunBlock extends MarkdownRenderChild {
     this.renderPending = true;
     window.requestAnimationFrame(() => {
       this.renderPending = false;
-      if (!this.unloaded) this.render();
+      if (this.unloaded) return;
+      this.render();
+      if (!this.containerEl.style.minHeight) this.rememberHeight();
     });
   }
 
+  // The output box's scroll position is kept in the plugin, so it survives this widget being
+  // rebuilt, or replaced when Obsidian re-renders the block.
+  saveOutputScroll() {
+    const pre = this.outEl && this.outEl.querySelector('.run-block-stream');
+    // A box that isn't on screen reports 0, which would wipe the real position.
+    if (!pre || !this.key || !pre.isConnected || pre.clientHeight === 0) return;
+    this.plugin.outputScroll.set(this.key, {
+      top: pre.scrollTop,
+      atBottom: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4,
+    });
+  }
+
+  restoreOutputScroll(pre, running) {
+    const apply = () => this.applyOutputScroll(pre, running);
+    apply();
+    // A new widget may not be laid out yet, and then setting scrollTop does nothing: try again once it is.
+    window.requestAnimationFrame(() => {
+      apply();
+      window.requestAnimationFrame(apply);
+    });
+    pre.addEventListener('scroll', () => this.saveOutputScroll(), { passive: true });
+  }
+
+  applyOutputScroll(pre, running) {
+    if (!pre || !pre.isConnected || pre.clientHeight === 0) return;
+    const saved = this.plugin.outputScroll.get(this.key);
+    // While output streams in, keep following it if you were already at the bottom.
+    if (saved) pre.scrollTop = running && saved.atBottom ? pre.scrollHeight : saved.top;
+    else if (running) pre.scrollTop = pre.scrollHeight;
+  }
+
+  // Browsers reset the scroll position of an element taken out of the page and put back, which
+  // Obsidian's editor does to blocks when the note changes. This puts the saved position back.
+  reapplyOutputScroll() {
+    const pre = this.outEl && this.outEl.querySelector('.run-block-stream');
+    const res = this.plugin.resultFor(this.ctx.sourcePath, this.meta);
+    this.applyOutputScroll(pre, !!res && !res.done);
+  }
+
+  // Remembers how tall this block is, so a re-render of it can start at that height.
+  rememberHeight() {
+    const height = this.containerEl.offsetHeight;
+    if (height > 0 && this.key) this.plugin.heights.set(this.key, height);
+  }
+
   render() {
-    const res = this.plugin.results.get(this.key);
+    const res = this.plugin.resultFor(this.ctx.sourcePath, this.meta);
+    const rev = this.plugin.reverts.get(this.key);
+    const reverting = !!rev && !rev.done;
     const running = !!res && !res.done;
     if (this.stopBtn) {
       this.runBtn.toggleClass('run-block-hidden', running);
@@ -561,18 +705,38 @@ class RunBlock extends MarkdownRenderChild {
         this.fitEditor();
       }
     }
+    // Rebuilding the output resets its scroll position and flickers, so only do it when something
+    // it shows has changed.
+    const deps = this.plugin.dependencyState(this.ctx.sourcePath, this.meta);
+    const signature = JSON.stringify([
+      res && [res.done, res.startedAt, res.chunks && res.chunks.reduce((n, c) => n + c.text.length, 0), res.error, res.exitCode, res.saved, res.check && [res.check.exitCode, res.check.error]],
+      deps.waiting, this.meta.id, this.meta.expect, this.meta.check,
+      rev && [rev.done, rev.ok, rev.chunks.reduce((n, c) => n + c.text.length, 0)],
+      this.plugin.revertBlocker(this.ctx.sourcePath, this.meta),
+      this.meta.kind === 'file' ? this.plugin.diskState(this.ctx.sourcePath, this.meta) : null,
+    ]);
+    if (signature === this.lastSignature) return;
+    this.lastSignature = signature;
+
+    this.saveOutputScroll();
     this.statusEl.className = 'run-block-status';
     this.statusEl.empty();
     this.outEl.empty();
     this.containerEl.removeClass('is-ok', 'is-pass', 'is-fail', 'is-error', 'is-blocked');
+    // Only change is-running when running starts or stops: removing it even briefly, while output
+    // streams in, restarts its pulse animation.
+    this.containerEl.toggleClass('is-running', running || reverting);
     this.renderDependencies(res);
+    this.renderUndoButtons(res);
 
     if (this.meta.kind === 'file') {
       this.renderFile(res);
+      this.renderRevert(rev);
       return;
     }
     if (!res) {
-      this.outEl.hide();
+      this.outEl.toggle(!!rev);
+      this.renderRevert(rev);
       return;
     }
     this.outEl.show();
@@ -582,10 +746,12 @@ class RunBlock extends MarkdownRenderChild {
       pre.createSpan({ cls: chunk.stream === 'stderr' ? 'run-stderr' : 'run-stdout', text: chunk.text });
     }
     if (!res.chunks.length) pre.createSpan({ cls: 'run-block-muted', text: running ? '' : '(no output)' });
+    this.restoreOutputScroll(pre, running);
     if (res.error) this.outEl.createDiv({ cls: 'run-block-error', text: res.error });
 
     if (running) {
       this.statusEl.addClass('is-running');
+      this.containerEl.addClass('is-running');
       this.statusEl.setText('Running…');
       return;
     }
@@ -596,8 +762,46 @@ class RunBlock extends MarkdownRenderChild {
     this.containerEl.addClass(`is-${verdict.status}`);
 
     const foot = this.outEl.createDiv({ cls: 'run-block-footer' });
-    foot.createSpan({ text: `exit ${res.exitCode === null ? '—' : res.exitCode} · ${formatDuration(res.durationMs)}` });
+    foot.createSpan({ text: `exit ${res.exitCode === null ? '—' : res.exitCode} · ${formatDuration(res.durationMs)}${res.startedAt ? ` · ran ${formatRan(res.startedAt)}` : ''}` });
+    if (res.truncated) foot.createSpan({ cls: 'run-block-muted', text: `output cut to ${MAX_SAVED_OUTPUT} characters` });
     renderItems(foot, verdict.items);
+    this.renderRevert(rev);
+  }
+
+  // The Revert and Reset buttons say what they'll do, and Revert is only enabled when it can run.
+  renderUndoButtons(res) {
+    if (this.revertBtn) {
+      const blocker = this.plugin.revertBlocker(this.ctx.sourcePath, this.meta);
+      this.revertBtn.disabled = !!blocker;
+      this.revertBtn.setAttr('aria-label', blocker ? `Revert: unavailable, because ${blocker}` : 'Revert: undo what this block did');
+    }
+    if (this.resetBlockBtn) {
+      this.resetBlockBtn.setAttr('aria-label', this.meta.revert && res
+        ? 'Reset: revert this block, then clear its output'
+        : 'Reset: clear this block\'s output');
+    }
+  }
+
+  // A block's last revert: in progress, done (the block is back to not having run), or failed (the
+  // block keeps its result, and the revert's output shows what went wrong).
+  renderRevert(rev) {
+    if (!rev) return;
+    if (!rev.done) {
+      this.statusEl.className = 'run-block-status is-running';
+      this.statusEl.setText('Reverting…');
+    } else if (rev.ok && !this.plugin.resultFor(this.ctx.sourcePath, this.meta)) {
+      this.statusEl.className = 'run-block-status is-reverted';
+      this.statusEl.setText('Reverted');
+    }
+    const box = this.outEl.createDiv({ cls: `run-block-revert ${!rev.done ? 'is-running' : rev.ok ? 'is-ok' : 'is-error'}` });
+    const title = !rev.done ? 'Reverting…'
+      : rev.ok ? `Reverted ${formatRan(rev.startedAt)}`
+      : `Revert failed: ${rev.error || `exit ${rev.exitCode}`}. The block's result is kept.`;
+    box.createDiv({ cls: 'run-block-revert-title', text: title });
+    if (rev.chunks.length) {
+      const pre = box.createEl('pre', { cls: 'run-block-stream' });
+      for (const chunk of rev.chunks) pre.createSpan({ cls: chunk.stream === 'stderr' ? 'run-stderr' : 'run-stdout', text: chunk.text });
+    }
   }
 
   // A block whose dependencies aren't complete can't run: its run button is disabled, and it says
@@ -631,6 +835,7 @@ class RunBlock extends MarkdownRenderChild {
     let verdict = null;
     if (checking) {
       this.statusEl.addClass('is-running');
+      this.containerEl.addClass('is-running');
       this.statusEl.setText('Checking…');
     } else if (res) {
       verdict = evaluate(this.meta, res);
@@ -660,6 +865,7 @@ class RunBlock extends MarkdownRenderChild {
       foot.createSpan({ cls, text });
     }
     if (verdict) renderItems(foot, verdict.items);
+    if (res && res.done && res.startedAt) foot.createSpan({ text: `written ${formatRan(res.startedAt)}` });
   }
 }
 
@@ -680,6 +886,13 @@ class RunnableBlocksPlugin extends Plugin {
     this.written = new Map(); // key -> md5 of what a file block last wrote to disk
     this.writeTimers = new Map(); // key -> pending write of a synced file block after typing
     this.noteIndex = new Map(); // note path -> metas of its blocks, for resolving depends-on
+    this.heights = new Map(); // key -> last rendered height, so a re-render can start at it
+    this.outputScroll = new Map(); // key -> { top, atBottom } of the block's output box
+    this.reverts = new Map(); // key -> the block's last revert: its output and how it went
+    this.revertProcs = new Map(); // key -> a revert that's running
+    // Prism highlights code synchronously once loaded, so blocks never render without their code.
+    this.prism = null;
+    this.prismReady = loadPrism().then((prism) => { this.prism = prism; }).catch(() => {});
 
     for (const kind of ['run', 'file']) {
       this.registerMarkdownCodeBlockProcessor(kind, (source, el, ctx) => {
@@ -694,6 +907,17 @@ class RunnableBlocksPlugin extends Plugin {
         const file = this.activeFile();
         if (!file) return false;
         if (!checking) this.runAll(file);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'reset-all',
+      name: 'Reset all blocks in current note',
+      checkCallback: (checking) => {
+        const file = this.activeFile();
+        if (!file) return false;
+        if (!checking) this.resetAll(file);
         return true;
       },
     });
@@ -714,6 +938,7 @@ class RunnableBlocksPlugin extends Plugin {
 
   onunload() {
     for (const entry of this.procs.values()) entry.kill('stopped');
+    for (const entry of this.revertProcs.values()) entry.kill('stopped');
     for (const timer of this.writeTimers.values()) clearTimeout(timer);
   }
 
@@ -731,10 +956,6 @@ class RunnableBlocksPlugin extends Plugin {
     return file instanceof TFile ? file : null;
   }
 
-  renderMarkdown(markdown, el, sourcePath, component) {
-    if (MarkdownRenderer.render) return MarkdownRenderer.render(this.app, markdown, el, sourcePath, component);
-    return MarkdownRenderer.renderMarkdown(markdown, el, sourcePath, component);
-  }
 
   interpreters() {
     const map = {};
@@ -785,6 +1006,8 @@ class RunnableBlocksPlugin extends Plugin {
       // Left out of "Run all", e.g. a teardown step at the end of a setup page.
       manual: h.manual === true,
       dependsOn,
+      saved: h.result && typeof h.result === 'object' ? h.result : null,
+      revert: null,
       timeout: Number(h.timeout) || null,
       source: normalize(source),
       code: parts.content,
@@ -796,6 +1019,7 @@ class RunnableBlocksPlugin extends Plugin {
       const ext = target ? path.extname(target).slice(1).toLowerCase() : '';
       const c = h.check == null ? null : asMap(h.check, ['check'], ['lang', 'run', 'expect']);
       if (c && c.run == null) warnings.push('"check" needs a "run" command.');
+      base.revert = this.parseRevert(h.revert, this.settings.defaultLang, warnings);
       // A check's expect has the same shape as a run block's: the command's output, or its MD5.
       const checkExpect = c ? asMap(c.expect, ['check', 'expect'], ['output', 'md5']) : {};
       // An editable file block's learner content lives in the header; the content below "---" stays
@@ -817,11 +1041,23 @@ class RunnableBlocksPlugin extends Plugin {
         } : null,
       });
     }
+    base.revert = this.parseRevert(h.revert, String(h.lang || this.settings.defaultLang), warnings);
     return Object.assign(base, {
       lang: String(h.lang || this.settings.defaultLang).toLowerCase(),
       expect: { output: text(expect.output), md5: hash(expect.md5), commandMd5: hash(expect['command-md5']) },
       check: null,
     });
+  }
+
+  // revert: a command that undoes what the block did, as a string, or a map with lang and run.
+  parseRevert(value, defaultLang, warnings) {
+    if (value == null) return null;
+    const map = typeof value === 'object' ? value : { run: value };
+    if (map.run == null) {
+      warnings.push('"revert" needs a "run" command.');
+      return null;
+    }
+    return { lang: String(map.lang || defaultLang).toLowerCase(), run: normalize(String(map.run)) };
   }
 
   // Every block in a note, in order, with its meta. A block whose id an earlier block already has,
@@ -854,7 +1090,7 @@ class RunnableBlocksPlugin extends Plugin {
         waiting.push({ id, label: `${id.slice(0, 8)}…`, reason: 'not found in this note' });
         continue;
       }
-      const res = this.results.get(this.keyFor(sourcePath, dep));
+      const res = this.resultFor(sourcePath, dep);
       let reason = null;
       if (!res) reason = 'not run yet';
       else if (!res.done) reason = 'running';
@@ -899,6 +1135,21 @@ class RunnableBlocksPlugin extends Plugin {
 
   // Blocks are keyed by their id= so drafts and output stay with the block while its code or fence
   // line changes. Until a block has an id, it falls back to a key derived from its content.
+  // Highlights `text` into a <code> element with Obsidian's Prism, or shows it plain until Prism loads.
+  highlight(codeEl, text, lang) {
+    const grammar = this.prism && this.prism.languages[lang];
+    codeEl.empty();
+    if (grammar) codeEl.appendChild(sanitizeHTMLToDom(this.prism.highlight(text, grammar, lang)));
+    else codeEl.setText(text);
+  }
+
+  // A block's key from its raw text alone, before anything else is known: only for blocks with an id.
+  keyForSource(sourcePath, source) {
+    const header = splitHeader(source).header;
+    const id = header && header.id != null ? String(header.id).toLowerCase() : '';
+    return UUID_RE.test(id) ? `${sourcePath}::id:${id}` : null;
+  }
+
   keyFor(sourcePath, meta) {
     if (meta.id) return `${sourcePath}::id:${meta.id}`;
     return `${sourcePath}::src:${md5(`${meta.kind}\n${meta.path || ''}\n${meta.lang}\n${meta.source}`)}`;
@@ -924,20 +1175,33 @@ class RunnableBlocksPlugin extends Plugin {
   // overwritten and the cursor stays put; otherwise edits the file on disk. `transform` returns the
   // new text, or the same text for no change. Resolves to whether anything changed.
   async editNote(sourcePath, transform) {
-    // Editing redraws blocks, which can move the note's scroll position; keep it where the reader left it.
-    const views = this.app.workspace.getLeavesOfType('markdown')
+    // Editing redraws blocks, which can move the note's scroll position; keep it where the reader left
+    // it. This uses each view's scroll container in pixels: Obsidian's getScroll()/applyScroll() work
+    // in whole lines, and restoring a line inside a tall block scrolls that block to the top.
+    const scrollers = this.app.workspace.getLeavesOfType('markdown')
       .map((leaf) => leaf.view)
-      .filter((v) => v instanceof MarkdownView && v.file && v.file.path === sourcePath && v.currentMode);
-    const scrolls = views.map((v) => [v, v.currentMode.getScroll()]);
+      .filter((v) => v instanceof MarkdownView && v.file && v.file.path === sourcePath)
+      .map((v) => v.contentEl.querySelector(v.getMode() === 'source' ? '.cm-scroller' : '.markdown-preview-view'))
+      .filter(Boolean)
+      .map((el) => [el, el.scrollTop]);
     const restore = () => {
-      for (const [v, scroll] of scrolls) if (v.currentMode.getScroll() !== scroll) v.currentMode.applyScroll(scroll);
+      for (const [el, top] of scrollers) if (el.isConnected && el.scrollTop !== top) el.scrollTop = top;
+      // Blocks' own output boxes lose their scroll position too, if they were moved in the page.
+      for (const widgets of this.widgets.values()) {
+        for (const widget of widgets) if (widget.ctx.sourcePath === sourcePath && !widget.unloaded) widget.reapplyOutputScroll();
+      }
     };
     const changed = await this.applyEdit(sourcePath, transform);
     if (changed) {
       restore();
-      // Blocks re-render a moment later, and their new heights can shift things again.
-      window.requestAnimationFrame(() => window.requestAnimationFrame(restore));
-      setTimeout(restore, 250);
+      // Blocks re-render on the next frame; correct once more after that.
+      window.requestAnimationFrame(restore);
+      // Reading view re-renders a changed note a little later; put output boxes back after that too.
+      setTimeout(() => {
+        for (const widgets of this.widgets.values()) {
+          for (const widget of widgets) if (widget.ctx.sourcePath === sourcePath && !widget.unloaded) widget.reapplyOutputScroll();
+        }
+      }, 300);
     }
     return changed;
   }
@@ -978,6 +1242,13 @@ class RunnableBlocksPlugin extends Plugin {
   async assignId(sourcePath, meta, extraEdit) {
     if (meta.id && !extraEdit) return meta;
     const id = meta.id || crypto.randomUUID();
+    // Editing the block re-renders it. Record its height under the key it will have afterwards,
+    // so the new widget starts at that height.
+    const finalKey = this.keyFor(sourcePath, Object.assign({}, meta, { id }));
+    for (const widget of this.widgets.get(this.keyFor(sourcePath, meta)) || []) {
+      const height = widget.containerEl.offsetHeight;
+      if (height > 0) this.heights.set(finalKey, height);
+    }
     let found = false;
     await this.editNote(sourcePath, (data) => {
       const block = this.locate(data, meta);
@@ -1066,7 +1337,10 @@ class RunnableBlocksPlugin extends Plugin {
       // changed it since this block rendered.
       const now = this.makeMeta(block.info, block.source);
       const want = code === now.original ? null : code;
-      return now.learner === want ? body : setHeaderEntry(body, 'learner', want);
+      let updated = now.learner === want ? body : setHeaderEntry(body, 'learner', want);
+      const res = this.results.get(this.keyFor(sourcePath, meta));
+      if (res && res.done && !res.saved) updated = setHeaderEntry(updated, 'result', savedResult(meta, res));
+      return updated;
     });
   }
 
@@ -1074,9 +1348,12 @@ class RunnableBlocksPlugin extends Plugin {
     const key = this.keyFor(sourcePath, meta);
     clearTimeout(this.writeTimers.get(key));
     this.drafts.set(key, meta.original);
+    // The current result describes content that's about to be replaced, so it shouldn't be saved.
+    this.results.delete(key);
     this.notify(key);
     const updated = await this.persistLearner(sourcePath, meta);
-    this.writeFileBlock(sourcePath, updated);
+    const res = await this.writeFileBlock(sourcePath, updated);
+    await this.persistResult(sourcePath, updated, res);
   }
 
   // Brings a synced file block up to date with its file. A change we didn't write ourselves (a
@@ -1189,7 +1466,10 @@ class RunnableBlocksPlugin extends Plugin {
   notify(key) {
     const set = this.widgets.get(key);
     if (set) for (const widget of set) widget.scheduleRender();
-    // Blocks that depend on this one may now be unblocked, or blocked again.
+    // Blocks that depend on this one may now be unblocked, or blocked again. That only changes when
+    // it starts or finishes, not with each chunk of output.
+    const res = this.results.get(key);
+    if (res && !res.done && res.chunks && res.chunks.length) return;
     const sourcePath = key.slice(0, key.indexOf('::'));
     for (const widgets of this.widgets.values()) {
       for (const widget of widgets) {
@@ -1265,6 +1545,7 @@ class RunnableBlocksPlugin extends Plugin {
     const file = this.getFile(sourcePath);
     const code = this.currentCode(key, meta);
     const hash = md5(code);
+    if (record) this.reverts.delete(key);
     const res = {
       done: false, chunks: [], stdout: '', exitCode: 0, startedAt: Date.now(), cmdHash: hash, outputHash: hash, content: code,
     };
@@ -1330,9 +1611,15 @@ class RunnableBlocksPlugin extends Plugin {
       new Notice(`Blocked: run ${deps.waiting.map((w) => (w.line ? `line ${w.line} (${w.label})` : w.label)).join(' and ')} first.`, 6000);
       return null;
     }
-    if (meta.kind === 'file') return this.writeFileBlock(sourcePath, meta);
-    await this.writePendingFiles(sourcePath, meta);
-    return this.runBlock(sourcePath, meta);
+    let res;
+    if (meta.kind === 'file') {
+      res = await this.writeFileBlock(sourcePath, meta);
+    } else {
+      await this.writePendingFiles(sourcePath, meta);
+      res = await this.runBlock(sourcePath, meta);
+    }
+    await this.persistResult(sourcePath, meta, res);
+    return res;
   }
 
   timeoutFor(meta) {
@@ -1345,6 +1632,7 @@ class RunnableBlocksPlugin extends Plugin {
     if (existing) return existing.promise;
 
     const code = this.currentCode(key, meta);
+    this.reverts.delete(key);
     const res = { done: false, chunks: [], stdout: '', exitCode: null, startedAt: Date.now(), cmdHash: md5(code) };
     this.results.set(key, res);
     this.notify(key);
@@ -1447,9 +1735,131 @@ class RunnableBlocksPlugin extends Plugin {
     this.notify(key);
   }
 
-  clearAll(file) {
+  // A block's result: the one from this session if there is one, otherwise the one saved in the note.
+  resultFor(sourcePath, meta) {
+    return this.results.get(this.keyFor(sourcePath, meta)) || (meta.saved ? loadResult(meta, meta.saved) : null);
+  }
+
+  // Saves a finished result into the block's header, as `result:`. If you're typing in the block,
+  // the cursor is put back once the note has re-rendered.
+  async persistResult(sourcePath, meta, res) {
+    if (!res || !res.done || !meta.id) return;
+    const key = this.keyFor(sourcePath, meta);
+    const typing = [...(this.widgets.get(key) || [])].find((w) => w.editor && w.editor === document.activeElement);
+    if (typing) this.refocus = { key, start: typing.editor.selectionStart, end: typing.editor.selectionEnd };
+    await this.assignId(sourcePath, meta, (body) => setHeaderEntry(body, 'result', savedResult(meta, res)));
+  }
+
+  // Blocks that depend on this one and still have a result. Like undo, they have to be reverted first.
+  activeDependents(sourcePath, meta) {
+    if (!meta.id) return [];
+    return (this.noteIndex.get(sourcePath) || [])
+      .filter((m) => m.dependsOn.includes(meta.id) && this.resultFor(sourcePath, m));
+  }
+
+  // Why a block's revert can't run now, or null if it can.
+  revertBlocker(sourcePath, meta) {
+    const key = this.keyFor(sourcePath, meta);
+    if (!meta.revert) return 'it has no revert command';
+    if (this.procs.has(key) || this.revertProcs.has(key)) return "it's running";
+    const res = this.resultFor(sourcePath, meta);
+    if (!res || !res.done) return "it hasn't run";
+    const dependents = this.activeDependents(sourcePath, meta);
+    if (dependents.length) return `revert or reset ${dependents.map(blockLabel).join(' and ')} first, which depend on it`;
+    return null;
+  }
+
+  // Runs a block's revert command. If it works, the block's result is removed, on screen and from the
+  // note, so the block is back to not having run; if it fails, the result stays. Resolves to whether
+  // it worked.
+  async revertBlock(sourcePath, meta) {
+    const key = this.keyFor(sourcePath, meta);
+    const blocker = this.revertBlocker(sourcePath, meta);
+    if (blocker) {
+      new Notice(`Can't revert this block: ${blocker}.`, 6000);
+      return false;
+    }
+    const rev = { done: false, chunks: [], startedAt: Date.now() };
+    this.reverts.set(key, rev);
+    this.notify(key);
+    const file = this.getFile(sourcePath);
+    let extraEnv;
+    if (meta.kind === 'file') {
+      try {
+        extraEnv = { FILE: this.resolveTarget(file, meta.path).target };
+      } catch (e) { /* the command runs without FILE */ }
+    }
+    const handle = this.spawnScript(meta.revert.lang, meta.revert.run, file, this.timeoutFor(meta), (stream, text) => {
+      const last = rev.chunks[rev.chunks.length - 1];
+      if (last && last.stream === stream) last.text += text;
+      else rev.chunks.push({ stream, text });
+      this.notify(key);
+    }, extraEnv);
+    this.revertProcs.set(key, { kill: (why) => handle.kill && handle.kill(why) });
+    const outcome = await handle.promise;
+    this.revertProcs.delete(key);
+    Object.assign(rev, outcome, { done: true, durationMs: Date.now() - rev.startedAt });
+    rev.ok = !rev.error && rev.exitCode === 0;
+    if (rev.ok) await this.clearBlock(sourcePath, meta);
+    this.notify(key);
+    return rev.ok;
+  }
+
+  // Reverts a block that has run and has a revert command, then clears all of its output. If the
+  // revert fails, nothing is cleared, so you can see what went wrong.
+  async resetBlock(sourcePath, meta) {
+    const key = this.keyFor(sourcePath, meta);
+    const res = this.resultFor(sourcePath, meta);
+    if (meta.revert && res && res.done) {
+      if (!(await this.revertBlock(sourcePath, meta))) return false;
+    } else if (res) {
+      const dependents = this.activeDependents(sourcePath, meta);
+      if (dependents.length) {
+        new Notice(`Reset ${dependents.map(blockLabel).join(' and ')} first, which depend on this block.`, 6000);
+        return false;
+      }
+    }
+    this.reverts.delete(key);
+    await this.clearBlock(sourcePath, meta);
+    this.notify(key);
+    return true;
+  }
+
+  // Resets every block in the note, from the bottom up so blocks are reverted before the ones they
+  // depend on. Stops at the first block that can't be reset.
+  async resetAll(file) {
+    const ids = this.metasFor(await this.readNote(file.path), file.path).map(({ meta }) => meta).reverse();
+    const notice = new Notice('Resetting…', 0);
+    let reset = 0;
+    for (const original of ids) {
+      // Re-read the block each time: earlier resets change the note.
+      const meta = this.metasFor(await this.readNote(file.path), file.path).map((e) => e.meta)
+        .find((m) => (original.id ? m.id === original.id : m.lineStart === original.lineStart)) || original;
+      if (!this.resultFor(file.path, meta) && !this.reverts.has(this.keyFor(file.path, meta))) continue;
+      notice.setMessage(`Resetting ${blockLabel(meta)}…`);
+      if (!(await this.resetBlock(file.path, meta))) {
+        notice.hide();
+        new Notice(`Stopped resetting at ${blockLabel(meta)}, after resetting ${reset} block(s).`, 10000);
+        return;
+      }
+      reset++;
+    }
+    notice.hide();
+    new Notice(`Reset ${reset} block(s).`, 6000);
+  }
+
+  // Clears a block's output, on screen and in the note.
+  async clearBlock(sourcePath, meta) {
+    this.clear(this.keyFor(sourcePath, meta));
+    if (meta.saved) await this.assignId(sourcePath, meta, (body) => setHeaderEntry(body, 'result', null));
+  }
+
+  async clearAll(file) {
     const prefix = `${file.path}::`;
+    for (const key of [...this.reverts.keys()]) if (key.startsWith(prefix)) this.reverts.delete(key);
     for (const key of [...this.results.keys()]) if (key.startsWith(prefix)) this.clear(key);
+    await this.editNote(file.path, (text) => this.metasFor(text).reverse().reduce(
+      (acc, { block, meta }) => (meta.saved ? replaceBody(acc, block, setHeaderEntry(block.source, 'result', null)) : acc), text));
   }
 
   async runAll(file) {
@@ -1472,6 +1882,7 @@ class RunnableBlocksPlugin extends Plugin {
       }
       // Every file block is rewritten here, so a full run always starts from the note's content.
       const res = await (meta.kind === 'file' ? this.writeFileBlock(file.path, meta) : this.runBlock(file.path, meta));
+      await this.persistResult(file.path, meta, res);
       const verdict = evaluate(meta, res);
       // Like a notebook, stop at the first problem: later blocks usually depend on earlier ones.
       if (verdict.status === 'fail' || verdict.status === 'error') {

@@ -30,10 +30,12 @@ The header can also open with its own `---`, like note frontmatter. Only the fir
 | `timeout` | Seconds before the block is killed. Overrides the global timeout. |
 | `manual` | `true` leaves the block out of **Run all**, e.g. a teardown step. Works on file blocks too. |
 | `depends-on` | The id of a block above, or a list of ids, that must have run successfully first (see [Dependencies](#dependencies)). |
+| `revert` | A command that undoes what the block did: a string, or `lang` and `run` (see [Revert and reset](#revert-and-reset)). |
 | `expect.output` | Exact expected stdout. |
 | `expect.md5` | Expected MD5 of stdout. |
 | `expect.command-md5` | Expected MD5 of the code that ran. |
 | `id` | Required: the block's UUID. Added the first time the block runs if it's missing (see [Block ids](#block-ids)). |
+| `result` | The block's last result, written by the plugin (see [Saved results](#saved-results)). You don't write it yourself. |
 
 `expect: <text>` on its own is shorthand for `expect.output`.
 
@@ -60,7 +62,7 @@ service:
 | `lang` | Syntax highlighting. Defaults to the file extension. |
 | `editable` | `true` lets the learner edit the file, which is then kept in sync with the file on disk (see below). |
 | `learner` | The learner's current version of the file. Written by the plugin; you don't need to set it. |
-| `timeout`, `id`, `depends-on` | As for `run` blocks. |
+| `timeout`, `id`, `depends-on`, `revert` | As for `run` blocks. A file block's revert gets `$FILE`, as its check does. |
 | `expect.content` | Exact expected file content. |
 | `expect.md5` | Expected MD5 of the file content. |
 | `check.run` | Command to run after writing. `$FILE` holds the file's absolute path. |
@@ -97,6 +99,7 @@ Files can't be written into the vault's `.obsidian` folder. Writing outside the 
 - **Green:** `Pass`, when every check matched, or `Done` / `Written`, when it ran fine and has no checks.
 - **Red:** `Fail`, when a check didn't match.
 - **Orange:** `Exit N`, `Error`, `Timed out` or `Stopped`, when it didn't run cleanly.
+- **Yellow, pulsing:** `Running…`, while a block runs, or `Checking…`, while a file block's check runs. If your system is set to reduce motion, the bar stays solid yellow.
 
 A block that hasn't run yet has no colour. Every check is listed with ✓ or ✗ under the block, and a shield icon marks blocks that have checks.
 
@@ -154,7 +157,7 @@ depends-on:
   - 99579044-9bb4-4e1c-93fc-1604cef37e39
 ```
 
-**When a block is blocked:** until every block it depends on has run successfully this session (a green marker: it passed its checks, or ran cleanly if it has none), the block is *blocked*:
+**When a block is blocked:** until every block it depends on has run successfully (a green marker: it passed its checks, or ran cleanly if it has none), the block is *blocked*. That includes results saved in the note from an earlier session (see [Saved results](#saved-results)). While blocked:
 - It has a grey **Blocked** label and a dashed border, and its ▶ (or write) button is disabled.
 - A **Waiting for** line names each unfinished dependency, its line in the note, and why: not run yet, running, failed its checks, exit 1, and so on. The line updates as dependencies finish.
 - ▶, Shift+Enter and the write button refuse to run it, with a notice saying what to run first.
@@ -166,6 +169,65 @@ If a dependency fails after the block ran, the block keeps its own result, but i
 
 **Problems that show:** an id that isn't a UUID gets a warning. An id that isn't in the note, or a block below the dependent one, shows in the Waiting for line.
 
+### Saved results
+
+When a block you ran finishes, its result is saved in its header as `result:`, which the rendered view hides. It's there after a restart, and it counts for `depends-on`.
+
+```yaml
+result:
+  ran: "2026-11-01T10:00:00.000Z"
+  duration-ms: 42
+  exit: 0
+  output-md5: 5d41402abc4b2a76b9719d911017c592
+  command-md5: …
+  stdout: hello
+```
+
+**What's saved:**
+- **`run` blocks:** when the block ran, how long it took, the exit code, any error, timeout or stop, the MD5 of its output and of the code that ran, and its stdout and stderr.
+- **Long output** is cut to 10,000 characters per stream, and marked `truncated`. Checks still evaluate, because exact-output checks compare hashes when the text has been cut.
+- **`file` blocks:** the content's MD5, and the check's exit code and output MD5. Check output is never shown, so it isn't saved either.
+
+**When it's saved:**
+- when a block you ran finishes: ▶, the write button, Shift+Enter or Run all
+- for an editable file block, when you leave its editor, together with your edits
+- not for checks that run automatically when a note opens, so opening a note still doesn't change it
+
+**Clearing:** **Clear output** (the eraser) removes a block's result from the note, and **Clear all outputs** does it for every block in the note.
+
+**Things to know:**
+- A saved result describes the run that produced it, not the present. After tearing a lab down, for example, a saved green marker for "deploy the cluster" still unblocks the blocks that depend on it. Clear the results, or run the blocks again.
+- The note changes every time a block finishes. That makes noisy diffs, and can conflict with Obsidian Sync or git if you're editing the same note elsewhere.
+- Output can contain secrets that commands print, such as tokens or passwords. Those end up in the note, and go wherever it's synced or committed.
+
+### Revert and reset
+
+A block can say how to undo what it did:
+
+```yaml
+revert: rm -rf demo/scratch
+```
+
+```yaml
+revert:
+  lang: python
+  run: |
+    import shutil
+    shutil.rmtree("demo/scratch", ignore_errors=True)
+```
+
+**Revert (↶):** shown on blocks with a `revert:` command. It's enabled once the block has run, including a result saved from an earlier session. It runs the command, with a pulsing yellow **Reverting…** bar.
+- **If it works,** the block's result is removed, on screen and from the note. The block is back to not having run, and shows **Reverted**, with the revert's output. Blocks that depend on it are blocked again.
+- **If it fails,** the block keeps its result, and the revert's output shows underneath in orange, with what went wrong.
+
+**Undo order:** you can't revert a block while a block that depends on it still has a result. Revert or reset the dependent block first. The button says why when it's unavailable.
+
+**Reset (the eraser):** on every block. If the block has run and has a `revert:`, Reset reverts it first, and stops there if the revert fails. Then it clears all of the block's output, including the result saved in the note. A block without a `revert:` is just cleared, but not while a block that depends on it still has a result.
+
+**Reset all blocks in current note:** in the command palette. It does the whole note from the bottom up, which reverts blocks in the right order. With `revert:` on its blocks, a setup page can tear its lab down this way.
+
+The **Restore the original code** button (↺), on editable blocks, is separate: it undoes your edits to the code, not what the block did.
+
 ### Writing an exercise
 
 1. Write the correct solution in the block and run it.
@@ -175,7 +237,8 @@ If a dependency fails after the block ran, the block keeps its own result, but i
 ## Commands
 
 - **Run all blocks in current note**: runs every block in order, skipping `manual: true` blocks. Like a notebook, it stops at the first block that fails or errors, since later blocks usually depend on it.
-- **Clear all outputs in current note**
+- **Reset all blocks in current note**: resets every block that has run, from the bottom of the note up, so a block is reverted before the blocks it depends on. Stops at the first block that can't be reset.
+- **Clear all outputs in current note**: clears every block's result, on screen and in the note, without reverting anything.
 
 ## Settings
 

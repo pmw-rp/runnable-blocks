@@ -268,6 +268,44 @@ depends-on:
 echo "Both dependencies are complete"
 ```
 
+## Revert and reset
+
+A block can say how to undo what it did, with `revert:`. Blocks that have one show a **Revert** button (↶) once they've run. If the revert works, the block is back to not having run. Every block also has **Reset** (the eraser): it reverts the block if it can, then clears its output.
+
+Run these two blocks. The second depends on the first:
+
+```run
+id: f9d67ceb-2bd9-4c75-81ba-41b580008ff5
+lang: bash
+revert: rm -rf demo/scratch
+---
+mkdir -p demo/scratch
+echo "hello" > demo/scratch/greeting.txt
+ls demo/scratch
+```
+
+```run
+id: 28419f49-fa1d-4909-990f-d0565e9b4e55
+lang: bash
+depends-on: f9d67ceb-2bd9-4c75-81ba-41b580008ff5
+revert: rm -f demo/scratch/copy.txt
+---
+cp demo/scratch/greeting.txt demo/scratch/copy.txt
+ls demo/scratch
+```
+
+Now try reverting the first block. You can't yet: like undo, you revert in reverse order, and the second block depends on the first. Revert the second block, then the first. **Reset all blocks in current note**, in the command palette, does the whole note from the bottom up.
+
+A file block's revert gets the file's path in `$FILE`, as its check does:
+
+```file
+id: f2672559-09f1-4c4e-b070-dc98ac271888
+path: demo/notes.txt
+revert: rm -f "$FILE"
+---
+Notes written by a file block.
+```
+
 ## Inside a callout
 
 > [!example] Node

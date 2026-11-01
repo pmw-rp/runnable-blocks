@@ -19,6 +19,18 @@
 .run-block.is-pass { border-left-color: var(--color-green); }
 .run-block.is-fail { border-left-color: var(--color-red); }
 .run-block.is-error { border-left-color: var(--color-orange); }
+/* Running: a yellow bar that pulses every 2 seconds */
+.run-block.is-running {
+  border-left-color: rgb(var(--color-yellow-rgb));
+  animation: run-block-pulse 2s ease-in-out infinite;
+}
+@keyframes run-block-pulse {
+  0%, 100% { border-left-color: rgba(var(--color-yellow-rgb), 1); }
+  50% { border-left-color: rgba(var(--color-yellow-rgb), 0.25); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-block.is-running { animation: none; }
+}
 /* Blocked: waiting for blocks it depends on */
 .run-block.is-blocked { border-left-style: dashed; border-left-color: var(--text-faint); }
 
@@ -44,7 +56,7 @@
   font-weight: var(--font-semibold);
 }
 .run-block-status:empty { display: none; }
-.run-block-status.is-running { color: var(--text-accent); }
+.run-block-status.is-running { color: var(--color-yellow); background: rgba(var(--color-yellow-rgb), 0.12); }
 .run-block-status.is-ok,
 .run-block-status.is-pass { color: var(--color-green); background: rgba(var(--color-green-rgb), 0.12); }
 .run-block-status.is-fail { color: var(--color-red); background: rgba(var(--color-red-rgb), 0.12); }
@@ -194,3 +206,23 @@
   font-size: var(--font-ui-smaller);
   background: rgba(var(--color-orange-rgb), 0.08);
 }
+
+/* Reverted: the block is back to not having run */
+.run-block-status.is-reverted { color: var(--text-muted); background: var(--background-modifier-hover); }
+
+/* A block's last revert, below its output */
+.run-block-revert {
+  margin: 0 12px 8px;
+  border-left: 2px solid var(--background-modifier-border);
+  padding-left: 8px;
+}
+.run-block-revert.is-running { border-left-color: rgb(var(--color-yellow-rgb)); }
+.run-block-revert.is-ok { border-left-color: var(--color-green); }
+.run-block-revert.is-error { border-left-color: var(--color-orange); }
+.run-block-revert-title {
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.run-block-revert.is-error .run-block-revert-title { color: var(--color-orange); }
+.run-block-revert .run-block-stream { padding: 4px 0; max-height: 200px; }
