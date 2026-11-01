@@ -505,6 +505,37 @@ gated.then((res) => {
     eq('and clears the result', P.results.has(P.keyFor('n.md', fm())), false);
     P.settleDraft(P.keyFor('n.md', fm()), fm());
     eq('then there is nothing to reset', P.resetBlocker('n.md', fm()), "there's nothing to reset");
+    // Clicking ▶ saves the editor first, which re-renders the block while it runs. The result is
+    // saved from the block as it was, and must keep the answer that ran.
+    disk = '```run\nid: 55555555-5555-4555-8555-555555555555\nlang: bash\neditable: true\n---\n# your command here\n```\n';
+    const before = fm();
+    const k = P.keyFor('n.md', before);
+    P.setDraft(k, before, 'seq 1 3 | rpk topic produce orders');
+    return P.persistLearner('n.md', before).then(() => {
+      P.settleDraft(k, fm());
+      const res = { done: true, startedAt: 1, durationMs: 5, exitCode: 0, stdout: 'ok', chunks: [], outputHash: 'h:ok', cmdHash: 'h:x', code: 'seq 1 3 | rpk topic produce orders' };
+      return P.persistResult('n.md', before, res);
+    }).then(() => {
+      eq('a result saved from the block as it was keeps the answer that ran', [fm().learner, fm().saved && fm().saved.stdout], ['seq 1 3 | rpk topic produce orders', 'ok']);
+    });
+  }).then(() => {
+    // The learner saves a first try by leaving the editor, then finishes the answer and clicks ▶.
+    // The click lands on the block from before that save re-rendered it.
+    disk = '```run\nid: 66666666-6666-4666-8666-666666666666\nlang: bash\neditable: true\n---\n# your command here\n```\n';
+    const first = fm();
+    const k = P.keyFor('n.md', first);
+    P.setDraft(k, first, 'rpk security acl create --allow-principal producer-app --operation write');
+    return P.persistLearner('n.md', first).then(() => {
+      const second = fm();
+      P.settleDraft(k, second);
+      P.setDraft(k, second, 'rpk security acl create --allow-principal producer-app --operation write --topic orders');
+      return P.persistLearner('n.md', second).then(() => {
+        P.settleDraft(k, fm());
+        eq('an out-of-date block still sees the latest answer', P.currentCode(k, second), 'rpk security acl create --allow-principal producer-app --operation write --topic orders');
+        eq('and its latest version is found', P.freshMeta('n.md', first).learner, 'rpk security acl create --allow-principal producer-app --operation write --topic orders');
+      });
+    });
+  }).then(() => {
     eq('a learner entry on a block that is not editable is ignored', P.makeMeta('run', 'lang: bash\nlearner: echo x\n---\necho y').code, 'echo y');
   });
 }).then(() => {

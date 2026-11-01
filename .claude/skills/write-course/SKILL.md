@@ -76,11 +76,13 @@ Follow the shape of `Shadow Linking/1 Setup.md`:
 
 An exercise is an `editable: true` block with a placeholder (`# your command here`) or a starting file, and a separate check block after it that verifies the *result*, not the command. Prefer checking observable state ("orders has 3 partitions on the shadow cluster") over checking the command text, so any correct answer passes.
 
-**When a wrong answer is hard to undo, gate the block with `matches:` patterns**, so it can't run until the command has the right shape. Add one pattern per mistake, each with its own `message`, because the learner sees every failing message as a to-do list. The Basic shadowing `orders` exercise is the model: single command, right topic name, right cluster, right partition count. Then:
+**When a wrong answer is hard to undo, gate the block with `matches:` patterns**, so it can't run until the command has the right shape. Add one pattern per mistake, each with its own `message`, because the learner sees every failing message as a to-do list.
+
+Restrict only the command the task is about, not the whole block. Learners look around first: `docker ps` before `docker kill`, `--help` before writing the command, `rpk topic describe` to find a leader. So allow any other lines, even on their own before the task's command is written, and restrict the task's command only: at most once, on a line of its own, with the constraints applied to that line. `references/block-format.md` has the patterns. RP Streaming 101's exercises are the model. Then:
 
 - Test the patterns with `scripts/check.js NOTE… --patterns ID 'cmd' 'cmd' …`, against several correct variants (flag order, `--flag=value`, short flags) and every mistake you can think of. The patterns are JavaScript regular expressions.
 - Messages say what to do ("Give it 3 partitions, with -p 3"), not what the pattern is.
-- Mark the exercise `idempotent: false` if running it twice would fail or do harm.
+- Since the learner may run the box several times while exploring, don't mark it `idempotent: false`. If running the task's command twice would do harm, guard it with a `command:` prerequisite that checks the lab is in its starting state.
 
 For file exercises, use an editable `file` block with a `check:` script that exits non-zero with a helpful message for each mistake (see Schema shadowing's `region` exercise), and make the block that uses the file depend on it.
 

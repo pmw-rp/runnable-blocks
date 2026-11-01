@@ -75,6 +75,21 @@ requires:
 - In multi-line (`m`) patterns, anchor on the command line (`^(?=\s*rpk\s)…`), or a comment line could satisfy them.
 - A pattern that forbids something uses a negative lookahead: `(?!.*\s--profile(=|\s+)shadow)`.
 
+### Gating one command, and allowing the rest
+
+Let the learner run anything else in the box, such as `docker ps`, `--help` or `rpk … describe`, and run it on its own first, before writing the task's command at all. Restrict only the task's command: at most once, on a line of its own, and right. Every rule is written as "no line with the command breaks this", so a box without the command passes, and the learner can explore.
+
+With `T` as a pattern for the start of the command's line (`docker\s+kill\b`, `rpk\b.*\bsecurity\s+acl\s+create\b`), followed by `(?![^\n]*\s(?:-h|--help)(?:\s|$))` so a `--help` line doesn't count, and `L` for a line start, `(?:^|\n)[ \t]*`, none of them needing flags:
+
+| Rule | Pattern |
+|---|---|
+| At most once | `^(?![\s\S]*L T[\s\S]*L T)` |
+| On a line of its own | ``^(?![\s\S]*L T[^\n]*[;&\|<>$`\\(){}])`` |
+| The line has something, e.g. `-n 3` | `^(?![\s\S]*L T(?!.*\s(?:-n\|--nodes)(?:=\|\s+)?3(?:\s\|$)))` |
+| The line is exactly a shape, e.g. `docker kill rp-node-N` | `^(?![\s\S]*(?:^\|\n)(?![ \t]*docker\s+kill\s+rp-node-\d+[ \t]*(?:\n\|$))[ \t]*T)` |
+
+(The `\|` in the table are plain `|` in the note.) Since the box can now run more than once, drop `idempotent: false` and guard anything dangerous to repeat with a `command:` prerequisite instead, for example "all three brokers are running" before a kill. Generate the patterns from one template rather than writing them by hand, quote every `message` in YAML (a message with `: ` in it isn't valid YAML otherwise), and test each with `scripts/check.js … --patterns`, including a box with only exploring commands in it.
+
 ## Reverts
 
 ```yaml

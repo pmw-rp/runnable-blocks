@@ -687,7 +687,12 @@ class RunBlock extends MarkdownRenderChild {
     }
     // The learner's version is saved into the note's `learner:` entry, keeping the original below
     // "---". Saving re-renders the block, so it's done once the learner moves on, not as they type.
-    ta.addEventListener('blur', () => this.plugin.persistLearner(this.ctx.sourcePath, this.meta));
+    // A block that has re-rendered since isn't saved: the new one has the learner's text, and this
+    // one's meta is out of date.
+    ta.addEventListener('blur', () => {
+      if (this.unloaded || !ta.isConnected) return;
+      this.plugin.persistLearner(this.ctx.sourcePath, this.meta, normalize(ta.value));
+    });
   }
 
   scheduleRender() {
@@ -1502,6 +1507,7 @@ class RunnableBlocksPlugin extends Plugin {
         endAfter--;
       }
       editor.replaceRange(after.slice(start, endAfter), editor.offsetToPos(start), editor.offsetToPos(endBefore));
+      this.metasFor(after, sourcePath);
       return true;
     }
     const file = this.getFile(sourcePath);
@@ -1510,6 +1516,8 @@ class RunnableBlocksPlugin extends Plugin {
     await this.app.vault.process(file, (data) => {
       const after = transform(data);
       changed = after !== data;
+      // Index the note's blocks as edited straight away, so nothing acts on their old versions.
+      if (changed) this.metasFor(after, sourcePath);
       return after;
     });
     return changed;
@@ -1579,8 +1587,18 @@ class RunnableBlocksPlugin extends Plugin {
     });
   }
 
+  // A block's code: what's being typed into it, or else what the note says now. `meta` can be out of
+  // date: a block re-renders whenever its note is edited (saving an editor, saving a result), and a
+  // click or a run can still come from the old one.
   currentCode(key, meta) {
-    return this.drafts.has(key) ? this.drafts.get(key) : meta.code;
+    if (this.drafts.has(key)) return this.drafts.get(key);
+    return this.freshMeta(key.slice(0, key.indexOf('::')), meta).code;
+  }
+
+  // The latest version of a block, from the note's index, or `meta` itself if it isn't indexed.
+  freshMeta(sourcePath, meta) {
+    if (!meta.id) return meta;
+    return (this.noteIndex.get(sourcePath) || []).find((m) => m.id === meta.id && m.kind === meta.kind) || meta;
   }
 
   // Called when a block (re-)renders: a draft equal to what the note now says has been saved.
@@ -1608,8 +1626,8 @@ class RunnableBlocksPlugin extends Plugin {
 
   // Saves an editable block's current code into the note's `learner:` header entry, or removes the
   // entry when the code is back to the original. The original, below "---", is never changed.
-  async persistLearner(sourcePath, meta) {
-    const code = this.currentCode(this.keyFor(sourcePath, meta), meta);
+  // `code` defaults to the block's current code; pass the editor's text when saving from an editor.
+  async persistLearner(sourcePath, meta, code = this.currentCode(this.keyFor(sourcePath, meta), meta)) {
     // The block gets its id in the same edit, so the note is only re-rendered once.
     return this.assignId(sourcePath, meta, (body, block) => {
       let updated = withLearner(this.makeMeta(block.info, block.source), body, code);
@@ -1863,7 +1881,7 @@ class RunnableBlocksPlugin extends Plugin {
   }
 
   async runCell(sourcePath, meta) {
-    meta = await this.assignId(sourcePath, meta);
+    meta = await this.assignId(sourcePath, this.freshMeta(sourcePath, meta));
     // Commands are checked again before every run: what was installed or running earlier may not be now.
     await this.checkPrerequisites(sourcePath, meta, { force: true });
     const deps = this.prerequisiteState(sourcePath, meta);
@@ -1898,7 +1916,8 @@ class RunnableBlocksPlugin extends Plugin {
 
     const code = this.currentCode(key, meta);
     this.reverts.delete(key);
-    const res = { done: false, chunks: [], stdout: '', exitCode: null, startedAt: Date.now(), cmdHash: md5(code) };
+    // `code` is what ran: saved with the result, whatever the block shows by the time it finishes.
+    const res = { done: false, chunks: [], stdout: '', exitCode: null, startedAt: Date.now(), cmdHash: md5(code), code };
     this.results.set(key, res);
     this.notify(key);
 
@@ -2012,8 +2031,10 @@ class RunnableBlocksPlugin extends Plugin {
     const key = this.keyFor(sourcePath, meta);
     const typing = [...(this.widgets.get(key) || [])].find((w) => w.editor && w.editor === document.activeElement);
     if (typing) this.refocus = { key, start: typing.editor.selectionStart, end: typing.editor.selectionEnd };
-    // An editable block's code is saved with its result, so the note says what produced it.
-    const code = this.currentCode(key, meta);
+    // An editable block's code is saved with its result, so the note says what produced it. That's
+    // the code that ran, not the block's code now: the block may have re-rendered while it ran (its
+    // editor is saved when you click ▶), and `meta` is from before then.
+    const code = res.code != null ? res.code : res.content != null ? res.content : this.currentCode(key, meta);
     await this.assignId(sourcePath, meta, (body, block) => {
       const updated = setHeaderEntry(body, 'result', savedResult(meta, res));
       return meta.editable ? withLearner(this.makeMeta(block.info, updated), updated, code) : updated;
@@ -2108,6 +2129,7 @@ class RunnableBlocksPlugin extends Plugin {
   // is cleared and the revert's output shows what was undone; if it fails, the result stays, so you
   // can see what went wrong. Any other block's result is just cleared.
   async resetBlock(sourcePath, meta) {
+    meta = this.freshMeta(sourcePath, meta);
     const key = this.keyFor(sourcePath, meta);
     const blocker = this.resetBlocker(sourcePath, meta);
     if (blocker) {
