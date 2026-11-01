@@ -49,7 +49,17 @@ function parseYaml(text) {
         obj[key] = body.join('\n').replace(/\n*$/, rest === '|-' ? '' : '\n');
       } else if (rest === '' || rest.startsWith('#')) {
         const next = lines.slice(i).find((x) => x.trim() && !x.trim().startsWith('#'));
-        obj[key] = next && indentOf(next) > ind ? block(indentOf(next)) : null;
+        if (next && next.trim().startsWith('- ') && indentOf(next) >= ind) {
+          // A list of scalars, such as depends-on
+          const items = [];
+          while (i < lines.length && (!lines[i].trim() || (lines[i].trim().startsWith('- ') && indentOf(lines[i]) === indentOf(next)))) {
+            if (lines[i].trim()) items.push(scalar(lines[i].trim().slice(2)));
+            i++;
+          }
+          obj[key] = items;
+        } else {
+          obj[key] = next && indentOf(next) > ind ? block(indentOf(next)) : null;
+        }
       } else obj[key] = scalar(rest);
     }
     return obj;
@@ -168,10 +178,10 @@ const P = new api.Plugin();
 P.settings = { autoIds: true, defaultLang: 'bash' };
 P.idJobs = new Map();
 const metas = P.metasFor(note).map(({ meta }) => meta);
-eq('demo block count', metas.length, 16);
-eq('demo kinds', metas.map((m) => m.kind[0]).join(''), 'rrrrrrfffffrrrrr');
+eq('demo block count', metas.length, 20);
+eq('demo kinds', metas.map((m) => m.kind[0]).join(''), 'rrrrrrfffff' + 'r'.repeat(9));
 eq('no warnings in demo', metas.flatMap((m) => m.warnings), []);
-eq('callout block', [metas[15].lang, metas[15].code], ['js', 'console.log([1, 2, 3].map(n => n * n).join(" "))']);
+eq('callout block', [metas[19].lang, metas[19].code], ['js', 'console.log([1, 2, 3].map(n => n * n).join(" "))']);
 eq('exact output expect', metas[1].expect.output, 'Hello from Obsidian');
 eq('command md5 expect', metas[5].expect, { output: null, md5: '8977ecbb8cb82d77fb091c7a7f186163', commandMd5: 'e69b4f45ed0327caa6fab84ce09cc4bb' });
 eq('editable + placeholder', [metas[4].editable, metas[4].code], [true, '# your command here']);
@@ -183,7 +193,7 @@ eq('expect content', metas[8].expect, { content: 'MODE=production', md5: null })
 eq('multi-line check', metas[10].check.run, 'import json, os\njson.load(open(os.environ["FILE"]))\nprint("valid JSON")');
 eq('timeout', metas[13].timeout, 2);
 eq('go example', [metas[14].lang, metas[14].expect.output], ['go', 'Hello from Go: 5050']);
-eq('hasChecks', metas.map(api.hasChecks).map(Number).join(''), '0111111111100010');
+eq('hasChecks', metas.map(api.hasChecks).map(Number).join(''), '01111111111000100000');
 const sc = P.makeMeta('file', 'path: a.txt\nexpect: hi\ncheck: cat "$FILE"\n---\nhi');
 eq('shorthands', [sc.expect.content, sc.check.run], ['hi', 'cat "$FILE"']);
 eq('check without run warns', P.makeMeta('file', 'path: a\ncheck:\n  lang: bash\n---\nx').warnings, ['"check" needs a "run" command.']);
@@ -215,6 +225,39 @@ eq('file content pass', F(metas[8], { content: 'MODE=production' }).status, 'pas
 eq('file validator exit', F(metas[10], { check: { stdout: '', exitCode: 1 } }).items, [{ label: 'check', ok: false, detail: 'exited 1' }]);
 eq('file no checks', F(P.makeMeta('file', 'path: x\n---\ny'), {}).label, 'Written');
 
+// Dependencies, using the demo's four dependency blocks
+Object.assign(P, { results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map(), noteIndex: new Map() });
+const dm = P.metasFor(note, 'demo.md').map(({ meta }) => meta);
+const [dA, dB, dC, dD] = dm.slice(15, 19);
+const waitingFor = (meta) => P.dependencyState('demo.md', meta).waiting.map((w) => w.reason);
+eq('depends-on as one id', dB.dependsOn, [dA.id]);
+eq('depends-on as a list', dD.dependsOn, [dA.id, dC.id]);
+eq('blocked until the dependency has run', [P.dependencyState('demo.md', dB).blocked, waitingFor(dB)], [true, ['not run yet']]);
+eq('waiting names the line', P.dependencyState('demo.md', dB).waiting[0].line, dA.lineStart + 1);
+eq('waiting labels the block', P.dependencyState('demo.md', dB).waiting[0].label, 'bash: mkdir -p demo');
+P.results.set(P.keyFor('demo.md', dA), { done: false });
+eq('blocked while the dependency runs', waitingFor(dB), ['running']);
+P.results.set(P.keyFor('demo.md', dA), { done: true, exitCode: 0, stdout: '' });
+eq('unblocked once the dependency ran cleanly', P.dependencyState('demo.md', dB).blocked, false);
+P.results.set(P.keyFor('demo.md', dC), { done: true, exitCode: 1, stdout: '' });
+eq('a dependency that exited with an error blocks', waitingFor(dD), ['exit 1']);
+P.results.set(P.keyFor('demo.md', dC), { done: true, exitCode: 0, stdout: '' });
+eq('unblocked once every dependency is complete', P.dependencyState('demo.md', dD).blocked, false);
+const checked = P.metasFor('```run\nid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\nexpect: yes\n---\necho no\n```\n```run\nid: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\ndepends-on: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n---\nls\n```\n', 'checked.md').map(({ meta }) => meta);
+P.results.set(P.keyFor('checked.md', checked[0]), { done: true, exitCode: 0, stdout: 'no' });
+eq('a dependency that failed its checks blocks', P.dependencyState('checked.md', checked[1]).waiting.map((w) => w.reason), ['failed its checks']);
+P.results.set(P.keyFor('checked.md', checked[0]), { done: true, exitCode: 0, stdout: 'yes' });
+eq('a dependency that passed its checks unblocks', P.dependencyState('checked.md', checked[1]).blocked, false);
+const lost = P.makeMeta('run', 'id: cccccccc-cccc-4ccc-8ccc-cccccccccccc\ndepends-on: 99999999-9999-4999-8999-999999999999\n---\nls');
+eq('an unknown id blocks', P.dependencyState('demo.md', lost).waiting.map((w) => w.reason), ['not found in this note']);
+eq('a non-UUID dependency warns', P.makeMeta('run', 'lang: bash\ndepends-on: first-block\n---\nls').warnings.length, 1);
+const above = Object.assign(P.makeMeta('run', 'id: dddddddd-dddd-4ddd-8ddd-dddddddddddd\ndepends-on: ' + dD.id + '\n---\nls'), { lineStart: 0 });
+P.results.delete(P.keyFor('demo.md', dD));
+eq('a dependency below the block is flagged', P.dependencyState('demo.md', above).waiting[0].below, true);
+eq('no dependencies, never blocked', P.dependencyState('demo.md', dA).blocked, false);
+P.results.delete(P.keyFor('demo.md', dA));
+const gated = P.runCell('demo.md', dB);
+
 // Ids: only UUIDs count, duplicates lose theirs, and nothing is assigned until a block runs
 const U1 = '11111111-1111-4111-8111-111111111111';
 eq('uuid id kept', P.makeMeta('run', `id: ${U1}\n---\nls`).id, U1);
@@ -235,7 +278,10 @@ const second = () => P.metasFor(disk)[1].meta;
 const oldKey = P.keyFor('n.md', second());
 P.drafts.set(oldKey, 'echo draft');
 P.results.set(oldKey, { done: true, stdout: 'earlier output' });
-P.resolveMeta('n.md', '# your command here', null, 'run').then(() => {
+gated.then((res) => {
+  eq('a blocked block refuses to run', [res, P.results.has(P.keyFor('demo.md', dB))], [null, false]);
+  return P.resolveMeta('n.md', '# your command here', null, 'run');
+}).then(() => {
   eq('rendering a block writes nothing', disk, original);
   return P.assignId('n.md', second());
 }).then((updated) => {

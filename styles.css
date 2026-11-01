@@ -19,6 +19,8 @@
 .run-block.is-pass { border-left-color: var(--color-green); }
 .run-block.is-fail { border-left-color: var(--color-red); }
 .run-block.is-error { border-left-color: var(--color-orange); }
+/* Blocked: waiting for blocks it depends on */
+.run-block.is-blocked { border-left-style: dashed; border-left-color: var(--text-faint); }
 
 .run-block-bar {
   display: flex;
@@ -47,6 +49,23 @@
 .run-block-status.is-pass { color: var(--color-green); background: rgba(var(--color-green-rgb), 0.12); }
 .run-block-status.is-fail { color: var(--color-red); background: rgba(var(--color-red-rgb), 0.12); }
 .run-block-status.is-error { color: var(--color-orange); background: rgba(var(--color-orange-rgb), 0.12); }
+.run-block-status.is-blocked { color: var(--text-muted); background: var(--background-modifier-hover); }
+
+.run-block-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.run-block-waiting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
+  padding: 3px 12px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  background: var(--background-secondary-alt);
+}
+.run-block-waiting-icon { display: inline-flex; }
+.run-block-waiting-icon svg { width: var(--icon-xs); height: var(--icon-xs); }
+.run-block-waiting-reason { color: var(--text-faint); }
 
 .run-block-btn.run-block-hidden { display: none; }
 

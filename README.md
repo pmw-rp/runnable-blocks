@@ -29,6 +29,7 @@ The header can also open with its own `---`, like note frontmatter. Only the fir
 | `editable` | `true` turns the code into an editor (see below). |
 | `timeout` | Seconds before the block is killed. Overrides the global timeout. |
 | `manual` | `true` leaves the block out of **Run all**, e.g. a teardown step. Works on file blocks too. |
+| `depends-on` | The id of a block above, or a list of ids, that must have run successfully first (see [Dependencies](#dependencies)). |
 | `expect.output` | Exact expected stdout. |
 | `expect.md5` | Expected MD5 of stdout. |
 | `expect.command-md5` | Expected MD5 of the code that ran. |
@@ -59,7 +60,7 @@ service:
 | `lang` | Syntax highlighting. Defaults to the file extension. |
 | `editable` | `true` lets the learner edit the file, which is then kept in sync with the file on disk (see below). |
 | `learner` | The learner's current version of the file. Written by the plugin; you don't need to set it. |
-| `timeout`, `id` | As for `run` blocks. |
+| `timeout`, `id`, `depends-on` | As for `run` blocks. |
 | `expect.content` | Exact expected file content. |
 | `expect.md5` | Expected MD5 of the file content. |
 | `check.run` | Command to run after writing. `$FILE` holds the file's absolute path. |
@@ -138,6 +139,32 @@ Edits, output and results belong to that id, so:
 **An id that isn't a UUID,** such as an old short id, or a duplicate, such as a pasted copy of a block, counts as missing. The block shows a warning, and gets a new UUID the first time it runs. The first of two blocks with the same id keeps it.
 
 To generate a UUID yourself, use `uuidgen | tr A-Z a-z` on macOS or Linux.
+
+### Dependencies
+
+A block can depend on blocks above it in the same note. List their ids in `depends-on`, as one id or a list:
+
+```yaml
+depends-on: 3d7bd56a-63be-49af-97e8-49bd9794886a
+```
+
+```yaml
+depends-on:
+  - 3d7bd56a-63be-49af-97e8-49bd9794886a
+  - 99579044-9bb4-4e1c-93fc-1604cef37e39
+```
+
+**When a block is blocked:** until every block it depends on has run successfully this session (a green marker: it passed its checks, or ran cleanly if it has none), the block is *blocked*:
+- It has a grey **Blocked** label and a dashed border, and its ▶ (or write) button is disabled.
+- A **Waiting for** line names each unfinished dependency, its line in the note, and why: not run yet, running, failed its checks, exit 1, and so on. The line updates as dependencies finish.
+- ▶, Shift+Enter and the write button refuse to run it, with a notice saying what to run first.
+- **Run all** stops at a blocked block, for example one depending on a `manual` block, and says why.
+
+If a dependency fails after the block ran, the block keeps its own result, but it's blocked again until the dependency succeeds.
+
+**Getting an id:** use **Copy block id** in a block's **#** menu. A block gets its id the first time it runs, so run it once before copying.
+
+**Problems that show:** an id that isn't a UUID gets a warning. An id that isn't in the note, or a block below the dependent one, shows in the Waiting for line.
 
 ### Writing an exercise
 

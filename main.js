@@ -63,7 +63,7 @@ const BLOCK_RE = /^(run|file)(\s|$)/;
 
 // Settings a block's YAML header may use. A header only counts as one if it uses at least one of
 // these, so a file whose own content has a "---" line isn't mistaken for a header.
-const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'timeout', 'expect', 'check', 'learner']);
+const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'timeout', 'depends-on', 'expect', 'check', 'learner']);
 
 // Files bigger than this aren't read back into an editable block.
 const MAX_SYNC_BYTES = 1024 * 1024;
@@ -253,6 +253,13 @@ function replaceBody(text, block, body) {
   return lines.join('\n');
 }
 
+// A short description of a block, for messages about it: its file, or its first line of code.
+function blockLabel(meta) {
+  if (meta.kind === 'file') return meta.path || 'file block';
+  const first = (meta.code.split('\n').find((line) => line.trim()) || '').trim();
+  return `${meta.lang}: ${first.length > 40 ? `${first.slice(0, 39)}…` : first}`;
+}
+
 function hasChecks(meta) {
   return Object.values(meta.expect).some((v) => v !== null) || !!meta.check;
 }
@@ -374,9 +381,11 @@ class RunBlock extends MarkdownRenderChild {
           this.plugin.saveDraft(this.ctx.sourcePath, this.meta));
       }
     }
-    this.button(bar, 'hash', 'Hashes', (evt) => this.hashMenu(evt));
+    this.button(bar, 'hash', 'Block id and hashes', (evt) => this.hashMenu(evt));
     if (!isFile) this.button(bar, 'eraser', 'Clear output', () => this.plugin.clear(this.key));
 
+    // Shows which dependencies a blocked block is waiting for
+    this.waitEl = el.createDiv({ cls: 'run-block-waiting' });
     for (const warning of this.meta.warnings) el.createDiv({ cls: 'run-block-warning', text: warning });
 
     const codeEl = el.createDiv({ cls: 'run-block-code' });
@@ -480,6 +489,14 @@ class RunBlock extends MarkdownRenderChild {
     const copy = (hash) => navigator.clipboard.writeText(hash).then(() => new Notice(`Copied ${hash}`));
     const pin = (keyPath, hash) => this.plugin.pinValue(this.ctx.sourcePath, this.meta, keyPath, hash);
     const menu = new Menu();
+    // A block's id is what other blocks list in depends-on.
+    if (this.meta.id) {
+      menu.addItem((i) => i.setTitle('Copy block id (for depends-on)').setIcon('link')
+        .onClick(() => navigator.clipboard.writeText(this.meta.id).then(() => new Notice(`Copied ${this.meta.id}`))));
+    } else {
+      menu.addItem((i) => i.setTitle('This block gets an id the first time it runs').setIcon('info').setDisabled(true));
+    }
+    menu.addSeparator();
     if (this.meta.kind === 'file') {
       // A file block's "output" is its content, so its md5 is known without writing anything.
       menu.addItem((i) => i.setTitle(`Copy content MD5 (${cmdHash.slice(0, 8)}…)`).setIcon('copy')
@@ -547,7 +564,8 @@ class RunBlock extends MarkdownRenderChild {
     this.statusEl.className = 'run-block-status';
     this.statusEl.empty();
     this.outEl.empty();
-    this.containerEl.removeClass('is-ok', 'is-pass', 'is-fail', 'is-error');
+    this.containerEl.removeClass('is-ok', 'is-pass', 'is-fail', 'is-error', 'is-blocked');
+    this.renderDependencies(res);
 
     if (this.meta.kind === 'file') {
       this.renderFile(res);
@@ -580,6 +598,32 @@ class RunBlock extends MarkdownRenderChild {
     const foot = this.outEl.createDiv({ cls: 'run-block-footer' });
     foot.createSpan({ text: `exit ${res.exitCode === null ? '—' : res.exitCode} · ${formatDuration(res.durationMs)}` });
     renderItems(foot, verdict.items);
+  }
+
+  // A block whose dependencies aren't complete can't run: its run button is disabled, and it says
+  // what it's waiting for. Until it has run, it's also labelled Blocked.
+  renderDependencies(res) {
+    const { blocked, waiting } = this.plugin.dependencyState(this.ctx.sourcePath, this.meta);
+    if (this.runBtn) {
+      this.runBtn.disabled = blocked;
+      this.runBtn.setAttr('aria-label', blocked ? 'Blocked: run the blocks it depends on first' : (this.meta.kind === 'file' ? `Write ${this.meta.path || 'file'}` : 'Run'));
+    }
+    this.waitEl.empty();
+    this.waitEl.toggle(blocked);
+    if (!blocked) return;
+    setIcon(this.waitEl.createSpan({ cls: 'run-block-waiting-icon' }), 'lock');
+    this.waitEl.createSpan({ text: 'Waiting for ' });
+    waiting.forEach((w, i) => {
+      if (i) this.waitEl.createSpan({ text: ' and ' });
+      this.waitEl.createEl('code', { text: w.label });
+      const where = w.line ? `line ${w.line}${w.below ? ', which is below this block' : ''}, ` : '';
+      this.waitEl.createSpan({ cls: 'run-block-waiting-reason', text: ` (${where}${w.reason})` });
+    });
+    if (!res) {
+      this.statusEl.addClass('is-blocked');
+      this.statusEl.setText('Blocked');
+      this.containerEl.addClass('is-blocked');
+    }
   }
 
   renderFile(res) {
@@ -635,6 +679,7 @@ class RunnableBlocksPlugin extends Plugin {
     this.widgets = new Map(); // key -> Set<RunBlock>
     this.written = new Map(); // key -> md5 of what a file block last wrote to disk
     this.writeTimers = new Map(); // key -> pending write of a synced file block after typing
+    this.noteIndex = new Map(); // note path -> metas of its blocks, for resolving depends-on
 
     for (const kind of ['run', 'file']) {
       this.registerMarkdownCodeBlockProcessor(kind, (source, el, ctx) => {
@@ -712,6 +757,12 @@ class RunnableBlocksPlugin extends Plugin {
     if (h.id != null && !UUID_RE.test(String(h.id))) {
       warnings.push(`This block's id, "${h.id}", isn't a UUID. It gets a new one the first time it runs.`);
     }
+    // depends-on: the ids of blocks that must have run successfully before this one can run
+    const dependsOn = (h['depends-on'] == null ? [] : [].concat(h['depends-on']))
+      .map((d) => String(d).trim().toLowerCase()).filter(Boolean);
+    for (const d of dependsOn) {
+      if (!UUID_RE.test(d)) warnings.push(`depends-on: "${d}" isn't a block id. Use the id (a UUID) of a block above.`);
+    }
     // A scalar is shorthand for the map's main key (`expect: 3`, `check: <command>`); unknown keys
     // inside the maps get a warning, with a pointer for likely mix-ups.
     const asMap = (value, keyPath, allowed) => {
@@ -733,6 +784,7 @@ class RunnableBlocksPlugin extends Plugin {
       editable: h.editable === true,
       // Left out of "Run all", e.g. a teardown step at the end of a setup page.
       manual: h.manual === true,
+      dependsOn,
       timeout: Number(h.timeout) || null,
       source: normalize(source),
       code: parts.content,
@@ -774,9 +826,9 @@ class RunnableBlocksPlugin extends Plugin {
 
   // Every block in a note, in order, with its meta. A block whose id an earlier block already has,
   // usually a pasted copy, counts as having no id, so the two never share state.
-  metasFor(text) {
+  metasFor(text, sourcePath) {
     const seen = new Set();
-    return parseBlocks(text).map((block) => {
+    const entries = parseBlocks(text).map((block) => {
       const meta = this.makeMeta(block.info, block.source);
       meta.lineStart = block.lineStart;
       if (meta.id && seen.has(meta.id)) {
@@ -786,6 +838,39 @@ class RunnableBlocksPlugin extends Plugin {
       if (meta.id) seen.add(meta.id);
       return { block, meta };
     });
+    // Remember the note's blocks, so dependencies between them can be looked up by id.
+    if (sourcePath) this.noteIndex.set(sourcePath, entries.map(({ meta }) => meta));
+    return entries;
+  }
+
+  // Which of a block's dependencies aren't complete. A dependency is complete once it has run
+  // successfully this session: it passed its checks, or ran cleanly if it has none.
+  dependencyState(sourcePath, meta) {
+    const blocks = this.noteIndex.get(sourcePath) || [];
+    const waiting = [];
+    for (const id of meta.dependsOn || []) {
+      const dep = blocks.find((m) => m.id === id);
+      if (!dep) {
+        waiting.push({ id, label: `${id.slice(0, 8)}…`, reason: 'not found in this note' });
+        continue;
+      }
+      const res = this.results.get(this.keyFor(sourcePath, dep));
+      let reason = null;
+      if (!res) reason = 'not run yet';
+      else if (!res.done) reason = 'running';
+      else {
+        const verdict = evaluate(dep, res);
+        if (verdict.status === 'fail') reason = 'failed its checks';
+        else if (verdict.status !== 'pass' && verdict.status !== 'ok') reason = verdict.label.toLowerCase();
+      }
+      if (reason) {
+        waiting.push({
+          id, label: blockLabel(dep), line: dep.lineStart + 1, reason,
+          below: meta.lineStart != null && dep.lineStart > meta.lineStart,
+        });
+      }
+    }
+    return { blocked: waiting.length > 0, waiting };
   }
 
   // The processor only gets the block body; the fence line (language, id=, md5=…) has to be read from the note.
@@ -793,7 +878,7 @@ class RunnableBlocksPlugin extends Plugin {
     let text = section ? section.text : null;
     if (text == null) text = await this.readNote(sourcePath);
     const want = normalize(source);
-    const matches = this.metasFor(text).filter(({ meta }) => meta.kind === kind && meta.source === want);
+    const matches = this.metasFor(text, sourcePath).filter(({ meta }) => meta.kind === kind && meta.source === want);
     const inSection = section && matches.find(({ block }) => block.lineStart >= section.lineStart && block.lineEnd <= section.lineEnd);
     const hit = inSection || matches[0];
     return hit ? hit.meta : this.makeMeta(kind, source);
@@ -1104,6 +1189,13 @@ class RunnableBlocksPlugin extends Plugin {
   notify(key) {
     const set = this.widgets.get(key);
     if (set) for (const widget of set) widget.scheduleRender();
+    // Blocks that depend on this one may now be unblocked, or blocked again.
+    const sourcePath = key.slice(0, key.indexOf('::'));
+    for (const widgets of this.widgets.values()) {
+      for (const widget of widgets) {
+        if (widget.meta.dependsOn.length && widget.ctx.sourcePath === sourcePath) widget.scheduleRender();
+      }
+    }
   }
 
   // Commands may change files on disk, which changes what file blocks report about them.
@@ -1233,6 +1325,11 @@ class RunnableBlocksPlugin extends Plugin {
 
   async runCell(sourcePath, meta) {
     meta = await this.assignId(sourcePath, meta);
+    const deps = this.dependencyState(sourcePath, meta);
+    if (deps.blocked) {
+      new Notice(`Blocked: run ${deps.waiting.map((w) => (w.line ? `line ${w.line} (${w.label})` : w.label)).join(' and ')} first.`, 6000);
+      return null;
+    }
     if (meta.kind === 'file') return this.writeFileBlock(sourcePath, meta);
     await this.writePendingFiles(sourcePath, meta);
     return this.runBlock(sourcePath, meta);
@@ -1357,7 +1454,7 @@ class RunnableBlocksPlugin extends Plugin {
 
   async runAll(file) {
     await this.assignAllIds(file.path);
-    const blocks = this.metasFor(await this.readNote(file.path)).filter(({ meta }) => !meta.manual);
+    const blocks = this.metasFor(await this.readNote(file.path), file.path).filter(({ meta }) => !meta.manual);
     if (!blocks.length) {
       new Notice('No run or file blocks in this note.');
       return;
@@ -1366,6 +1463,13 @@ class RunnableBlocksPlugin extends Plugin {
     const notice = new Notice(`Running ${blocks.length} block(s)…`, 0);
     for (const [i, { meta }] of blocks.entries()) {
       notice.setMessage(`Running block ${i + 1} of ${blocks.length}…`);
+      const deps = this.dependencyState(file.path, meta);
+      if (deps.blocked) {
+        notice.hide();
+        const what = deps.waiting.map((w) => `${w.label} (${w.reason})`).join(', ');
+        new Notice(`Stopped at block ${i + 1} of ${blocks.length}: it's blocked, waiting for ${what}.`, 10000);
+        return;
+      }
       // Every file block is rewritten here, so a full run always starts from the note's content.
       const res = await (meta.kind === 'file' ? this.writeFileBlock(file.path, meta) : this.runBlock(file.path, meta));
       const verdict = evaluate(meta, res);

@@ -220,6 +220,54 @@ func main() {
 }
 ```
 
+## Dependencies
+
+A block can depend on blocks above it, by listing their ids in `depends-on`. Until each of them has run successfully (passed its checks, or run cleanly if it has none), the block is **blocked**: it can't run, and it says what it's waiting for. To get a block's id for `depends-on`, use **Copy block id** in its **#** menu.
+
+This block starts the chain:
+
+```run
+id: 3d7bd56a-63be-49af-97e8-49bd9794886a
+lang: bash
+---
+mkdir -p demo
+date > demo/started.txt
+echo "Started at $(cat demo/started.txt)"
+```
+
+This one is blocked until the block above has run:
+
+```run
+id: d94dcec2-5319-42dc-ba43-adde7ef8f475
+lang: bash
+depends-on: 3d7bd56a-63be-49af-97e8-49bd9794886a
+---
+echo "The first block ran at $(cat demo/started.txt)"
+```
+
+A block that fails keeps the blocks depending on it blocked. This one fails until you change `exit 1` to `exit 0` and run it again:
+
+```run
+id: 99579044-9bb4-4e1c-93fc-1604cef37e39
+lang: bash
+editable: true
+---
+echo "Checking the environment..."
+exit 1
+```
+
+This one depends on both the first block and the one you just edited, so it's blocked until both have run successfully:
+
+```run
+id: 87124527-faa0-4e28-8231-956d8cb1c5db
+lang: bash
+depends-on:
+  - 3d7bd56a-63be-49af-97e8-49bd9794886a
+  - 99579044-9bb4-4e1c-93fc-1604cef37e39
+---
+echo "Both dependencies are complete"
+```
+
 ## Inside a callout
 
 > [!example] Node
