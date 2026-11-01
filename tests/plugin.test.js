@@ -50,11 +50,17 @@ function parseYaml(text) {
       } else if (rest === '' || rest.startsWith('#')) {
         const next = lines.slice(i).find((x) => x.trim() && !x.trim().startsWith('#'));
         if (next && next.trim().startsWith('- ') && indentOf(next) >= ind) {
-          // A list of scalars, such as depends-on
+          // A list of scalars, such as depends-on, or of maps, such as requires
           const items = [];
-          while (i < lines.length && (!lines[i].trim() || (lines[i].trim().startsWith('- ') && indentOf(lines[i]) === indentOf(next)))) {
-            if (lines[i].trim()) items.push(scalar(lines[i].trim().slice(2)));
+          const at = indentOf(next);
+          while (i < lines.length && (!lines[i].trim() || (lines[i].trim().startsWith('- ') && indentOf(lines[i]) === at))) {
+            if (!lines[i].trim()) { i++; continue; }
+            const first = lines[i].trim().slice(2);
             i++;
+            if (!/^[\w-]+:(\s|$)/.test(first)) { items.push(scalar(first)); continue; }
+            const sub = [first];
+            while (i < lines.length && lines[i].trim() && indentOf(lines[i]) > at) sub.push(lines[i++].slice(at + 2));
+            items.push(parseYaml(sub.join('\n')));
           }
           obj[key] = items;
         } else {
@@ -109,6 +115,7 @@ const fakeFs = {
   readFileSync: (p) => { if (!(p in files)) throw enoent(); return files[p]; },
   statSync: (p) => { if (!(p in files)) throw enoent(); return { size: files[p].length }; },
   writeFileSync: (p, d) => { files[p] = d; },
+  unlinkSync: (p) => { if (!(p in files)) throw enoent(); delete files[p]; },
   mkdirSync: () => {},
   watch: () => ({ close() {} }),
 };
@@ -178,8 +185,8 @@ const P = new api.Plugin();
 P.settings = { autoIds: true, defaultLang: 'bash' };
 P.idJobs = new Map();
 const metas = P.metasFor(note).map(({ meta }) => meta);
-eq('demo block count', metas.length, 23);
-eq('demo kinds', metas.map((m) => m.kind[0]).join(''), 'rrrrrrfffff' + 'r'.repeat(10) + 'fr');
+eq('demo block count', metas.length, 27);
+eq('demo kinds', metas.map((m) => m.kind[0]).join(''), 'rrrrrrfffff' + 'r'.repeat(12) + 'f' + 'rrr');
 eq('no warnings in demo', metas.flatMap((m) => m.warnings), []);
 eq('callout block', [metas[metas.length - 1].lang, metas[metas.length - 1].code], ['js', 'console.log([1, 2, 3].map(n => n * n).join(" "))']);
 eq('exact output expect', metas[1].expect.output, 'Hello from Obsidian');
@@ -193,7 +200,7 @@ eq('expect content', metas[8].expect, { content: 'MODE=production', md5: null })
 eq('multi-line check', metas[10].check.run, 'import json, os\njson.load(open(os.environ["FILE"]))\nprint("valid JSON")');
 eq('timeout', metas[13].timeout, 2);
 eq('go example', [metas[14].lang, metas[14].expect.output], ['go', 'Hello from Go: 5050']);
-eq('hasChecks', metas.map(api.hasChecks).map(Number).join(''), '01111111111000100000000');
+eq('hasChecks', metas.map(api.hasChecks).map(Number).join(''), '011111111110001000000000000');
 const sc = P.makeMeta('file', 'path: a.txt\nexpect: hi\ncheck: cat "$FILE"\n---\nhi');
 eq('shorthands', [sc.expect.content, sc.check.run], ['hi', 'cat "$FILE"']);
 eq('check without run warns', P.makeMeta('file', 'path: a\ncheck:\n  lang: bash\n---\nx').warnings, ['"check" needs a "run" command.']);
@@ -253,6 +260,10 @@ eq('key from raw text, with an id', P.keyForSource('n.md', 'id: ' + 'aaaaaaaa-aa
 eq('no key from raw text without an id', P.keyForSource('n.md', 'lang: bash\n---\nls'), null);
 eq('no key from raw text with a short id', P.keyForSource('n.md', 'id: k3f9qz\n---\nls'), null);
 
+// Idempotency
+eq('blocks are idempotent by default', P.makeMeta('run', 'lang: bash\n---\nls').idempotent, true);
+eq('idempotent: false', P.makeMeta('run', 'lang: bash\nidempotent: false\n---\nmkdir x').idempotent, false);
+
 // Revert commands
 eq('revert as a command', P.makeMeta('run', 'lang: python\nrevert: rm -rf x\n---\nprint(1)').revert, { lang: 'python', run: 'rm -rf x' });
 eq('revert as a map', P.makeMeta('run', 'lang: bash\nrevert:\n  lang: python\n  run: print(2)\n---\nls').revert, { lang: 'python', run: 'print(2)' });
@@ -261,35 +272,67 @@ eq('revert without run warns', P.makeMeta('run', 'lang: bash\nrevert:\n  lang: b
 eq('no revert', P.makeMeta('run', 'lang: bash\n---\nls').revert, null);
 
 // Dependencies, using the demo's four dependency blocks
-Object.assign(P, { reverts: new Map(), revertProcs: new Map(), results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map(), noteIndex: new Map() });
+Object.assign(P, { reverts: new Map(), revertProcs: new Map(), results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map(), noteIndex: new Map(), commandChecks: new Map(), resetting: new Set(), removed: new Set() });
 const dm = P.metasFor(note, 'demo.md').map(({ meta }) => meta);
 const [dA, dB, dC, dD] = dm.slice(15, 19);
-const waitingFor = (meta) => P.dependencyState('demo.md', meta).waiting.map((w) => w.reason);
+const waitingFor = (meta) => P.prerequisiteState('demo.md', meta).waiting.map((w) => w.reason);
 eq('depends-on as one id', dB.dependsOn, [dA.id]);
 eq('depends-on as a list', dD.dependsOn, [dA.id, dC.id]);
-eq('blocked until the dependency has run', [P.dependencyState('demo.md', dB).blocked, waitingFor(dB)], [true, ['not run yet']]);
-eq('waiting names the line', P.dependencyState('demo.md', dB).waiting[0].line, dA.lineStart + 1);
-eq('waiting labels the block', P.dependencyState('demo.md', dB).waiting[0].label, 'bash: mkdir -p demo');
+eq('blocked until the dependency has run', [P.prerequisiteState('demo.md', dB).blocked, waitingFor(dB)], [true, ['not run yet']]);
+eq('waiting names the line', P.prerequisiteState('demo.md', dB).waiting[0].line, dA.lineStart + 1);
+eq('waiting labels the block', P.prerequisiteState('demo.md', dB).waiting[0].label, 'bash: mkdir -p demo');
 P.results.set(P.keyFor('demo.md', dA), { done: false });
 eq('blocked while the dependency runs', waitingFor(dB), ['running']);
 P.results.set(P.keyFor('demo.md', dA), { done: true, exitCode: 0, stdout: '' });
-eq('unblocked once the dependency ran cleanly', P.dependencyState('demo.md', dB).blocked, false);
+eq('unblocked once the dependency ran cleanly', P.prerequisiteState('demo.md', dB).blocked, false);
 P.results.set(P.keyFor('demo.md', dC), { done: true, exitCode: 1, stdout: '' });
 eq('a dependency that exited with an error blocks', waitingFor(dD), ['exit 1']);
 P.results.set(P.keyFor('demo.md', dC), { done: true, exitCode: 0, stdout: '' });
-eq('unblocked once every dependency is complete', P.dependencyState('demo.md', dD).blocked, false);
+eq('unblocked once every dependency is complete', P.prerequisiteState('demo.md', dD).blocked, false);
 const checked = P.metasFor('```run\nid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\nexpect: yes\n---\necho no\n```\n```run\nid: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\ndepends-on: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\n---\nls\n```\n', 'checked.md').map(({ meta }) => meta);
 P.results.set(P.keyFor('checked.md', checked[0]), { done: true, exitCode: 0, stdout: 'no' });
-eq('a dependency that failed its checks blocks', P.dependencyState('checked.md', checked[1]).waiting.map((w) => w.reason), ['failed its checks']);
+eq('a dependency that failed its checks blocks', P.prerequisiteState('checked.md', checked[1]).waiting.map((w) => w.reason), ['failed its checks']);
 P.results.set(P.keyFor('checked.md', checked[0]), { done: true, exitCode: 0, stdout: 'yes' });
-eq('a dependency that passed its checks unblocks', P.dependencyState('checked.md', checked[1]).blocked, false);
+eq('a dependency that passed its checks unblocks', P.prerequisiteState('checked.md', checked[1]).blocked, false);
 const lost = P.makeMeta('run', 'id: cccccccc-cccc-4ccc-8ccc-cccccccccccc\ndepends-on: 99999999-9999-4999-8999-999999999999\n---\nls');
-eq('an unknown id blocks', P.dependencyState('demo.md', lost).waiting.map((w) => w.reason), ['not found in this note']);
+eq('an unknown id blocks', P.prerequisiteState('demo.md', lost).waiting.map((w) => w.reason), ['not found in this note']);
 eq('a non-UUID dependency warns', P.makeMeta('run', 'lang: bash\ndepends-on: first-block\n---\nls').warnings.length, 1);
 const above = Object.assign(P.makeMeta('run', 'id: dddddddd-dddd-4ddd-8ddd-dddddddddddd\ndepends-on: ' + dD.id + '\n---\nls'), { lineStart: 0 });
 P.results.delete(P.keyFor('demo.md', dD));
-eq('a dependency below the block is flagged', P.dependencyState('demo.md', above).waiting[0].below, true);
-eq('no dependencies, never blocked', P.dependencyState('demo.md', dA).blocked, false);
+eq('a dependency below the block is flagged', P.prerequisiteState('demo.md', above).waiting[0].below, true);
+eq('no dependencies, never blocked', P.prerequisiteState('demo.md', dA).blocked, false);
+
+// Prerequisites: requires
+const reqMeta = (header) => Object.assign(P.makeMeta('run', 'id: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\nlang: bash\neditable: true\n' + header + '---\nkubectl get pods'), { lineStart: 99 });
+const rq = reqMeta('requires:\n  - ' + dA.id + '\n  - block: ' + dC.id + '\n    message: Create the topic\n  - command: command -v kubectl\n    message: Install kubectl\n  - matches: ^kubectl scale\n    flags: m\n    message: Use kubectl scale\n');
+eq('requires parses each kind', rq.requires.map((r) => r.type), ['block', 'block', 'command', 'matches']);
+eq('requires block ids count as dependencies', rq.dependsOn, [dA.id, dC.id]);
+eq('a command gets the default language and timeout', [rq.requires[2].lang, rq.requires[2].timeout, rq.requires[2].run], ['bash', 10, 'command -v kubectl']);
+eq('depends-on and requires combine', reqMeta('depends-on: ' + dA.id + '\nrequires:\n  - matches: x\n').requires.map((r) => r.type), ['block', 'matches']);
+eq('an entry with two kinds warns', reqMeta('requires:\n  - command: ls\n    matches: x\n').warnings, ['requires, entry 1: needs one of "block", "command" or "matches".']);
+eq('an unknown key in an entry warns', reqMeta('requires:\n  - command: ls\n    flags: i\n').warnings, ['Unknown setting "flags" in requires, entry 1.']);
+eq('a bad pattern warns and is left out', [reqMeta('requires:\n  - matches: "("\n').warnings.length, reqMeta('requires:\n  - matches: "("\n').requires.length], [1, 0]);
+P.results.set(P.keyFor('demo.md', dA), { done: true, exitCode: 0, stdout: '' });
+eq('an unchecked command and an unmatched pattern', P.prerequisiteState('demo.md', rq).waiting.map((w) => [w.type, w.reason]), [['matches', "doesn't match"]]);
+eq('the pattern says what to do', P.prerequisiteState('demo.md', rq).waiting[0].summary, 'Use kubectl scale');
+P.drafts.set(P.keyFor('demo.md', rq), 'kubectl scale sts/redpanda --replicas=4');
+eq('the learner\'s code matching unblocks', P.prerequisiteState('demo.md', rq).blocked, false);
+eq('a pattern without a message has a default', P.prerequisiteState('demo.md', reqMeta('requires:\n  - matches: nope\n')).waiting[0].summary, "The code isn't in the expected form yet");
+P.commandChecks.set(P.commandKey('demo.md', rq.requires[2]), { done: false });
+eq('a command being checked blocks', waitingFor(rq), ['checking']);
+P.commandChecks.set(P.commandKey('demo.md', rq.requires[2]), { done: true, ok: false, exitCode: 1 });
+eq('a failed command blocks', [waitingFor(rq), P.prerequisiteState('demo.md', rq).waiting[0].failed], [['exit 1'], true]);
+eq('a failed command without a message says what failed', P.prerequisiteState('demo.md', reqMeta('requires:\n  - command: command -v kubectl\n')).waiting[0].summary, '`command -v kubectl` has to succeed (exit 1)');
+P.commandChecks.set(P.commandKey('demo.md', rq.requires[2]), { done: true, ok: true, exitCode: 0 });
+eq('a command that succeeded is met', P.prerequisiteState('demo.md', rq).blocked, false);
+P.drafts.clear();
+P.commandChecks.clear();
+const [pCmd, pEx] = dm.slice(19, 21);
+eq('demo command prerequisites', pCmd.requires.map((r) => r.run), ['command -v git', 'test -f demo/started.txt']);
+eq('demo exercise is blocked by its placeholder', waitingFor(pEx), ["doesn't match"]);
+P.drafts.set(P.keyFor('demo.md', pEx), '# count them\nwc -l demo/started.txt');
+eq('demo exercise unblocks with wc -l', P.prerequisiteState('demo.md', pEx).blocked, false);
+P.drafts.clear();
 P.results.delete(P.keyFor('demo.md', dA));
 const gated = P.runCell('demo.md', dB);
 
@@ -345,7 +388,7 @@ gated.then((res) => {
   P.app.vault.adapter = new FileSystemAdapter();
   P.app.vault.configDir = '.obsidian';
   P.settings.cwdMode = 'vault';
-  Object.assign(P, { reverts: new Map(), revertProcs: new Map(), results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map() });
+  Object.assign(P, { reverts: new Map(), revertProcs: new Map(), results: new Map(), procs: new Map(), drafts: new Map(), widgets: new Map(), written: new Map(), writeTimers: new Map(), resetting: new Set(), removed: new Set() });
   const fm = () => P.metasFor(disk)[0].meta;
   const key = P.keyFor('n.md', fm());
   P.syncFromDisk('n.md', fm(), { onLoad: true });
@@ -382,6 +425,43 @@ gated.then((res) => {
     eq('reset removes learner from note', fm().learner, null);
     eq('reset saves the result of writing the original', [fm().saved && fm().saved['content-md5'], fm().code], ['h:replicas: 1', 'replicas: 1']);
     eq('note body after reset', disk.replace(/result:\n(  .*\n)+/, ''), '```file\nid: ' + U1 + '\npath: demo/a.yaml\neditable: true\n---\nreplicas: 1\n```\n');
+
+    // Reset (the toolbar button, and Reset all): the learner's edits go, and the original is checked.
+    disk = '```file\nid: ' + U1 + '\npath: demo/a.yaml\neditable: true\nexpect:\n  content: "replicas: 3"\nlearner: "replicas: 3"\n---\nreplicas: 1\n```\n';
+    files['/vault/demo/a.yaml'] = 'replicas: 3\n';
+    P.drafts.clear();
+    return P.writeFileBlock('n.md', fm(), { write: false });
+  }).then(() => {
+    eq('before reset: the learner\'s file passes', api.evaluate(fm(), P.results.get(key)).status, 'pass');
+    eq('an edited file block can be reset', P.resetBlocker('n.md', fm()), null);
+    return P.resetBlock('n.md', fm());
+  }).then(() => new Promise((r) => r())).then(() => {
+    eq('reset deletes the file', '/vault/demo/a.yaml' in files, false);
+    eq('reset removes the learner\'s content from the note', [fm().learner, fm().code], [null, 'replicas: 1']);
+    eq('reset leaves no result', [P.results.has(key), fm().saved], [false, null]);
+    eq('reset leaves nothing being reset', P.resetting.size, 0);
+    P.syncFromDisk('n.md', fm(), { onLoad: true });
+    P.validateOnLoad('n.md', fm());
+    eq('a re-render doesn\'t recreate or check it', ['/vault/demo/a.yaml' in files, P.results.has(key)], [false, false]);
+    eq('then there\'s nothing to reset', P.resetBlocker('n.md', fm()), "there's nothing to reset");
+    return P.writeFileBlock('n.md', fm(), { check: false, record: false });
+  }).then(() => {
+    eq('writing it again brings it back', [files['/vault/demo/a.yaml'], P.removed.size], ['replicas: 1\n', 0]);
+    eq('an unedited file on disk can be reset', P.resetBlocker('n.md', fm()), null);
+    files['/vault/demo/a.yaml'] = 'someone else\n';
+    P.removeWrittenFile('n.md', fm());
+    eq('a file changed by something else is kept', files['/vault/demo/a.yaml'], 'someone else\n');
+
+    disk = '```file\nid: 33333333-3333-4333-8333-333333333333\npath: demo/b.txt\n---\nplain\n```\n';
+    return P.writeFileBlock('n.md', fm());
+  }).then(() => {
+    eq('a non-editable file block writes its file', files['/vault/demo/b.txt'], 'plain\n');
+    return P.resetBlock('n.md', fm());
+  }).then(() => {
+    eq('and Reset deletes it', ['/vault/demo/b.txt' in files, P.results.has(P.keyFor('n.md', fm()))], [false, false]);
+    files['/vault/demo/b.txt'] = 'plain\n';
+    P.results.clear();
+    eq('a file block whose file is on disk can be reset, with no result', P.resetBlocker('n.md', fm()), null);
   });
 }).then(() => {
   // Results saved in the note: after a run, and still there after a restart
@@ -395,11 +475,11 @@ gated.then((res) => {
     P.results = new Map();
     const restored = P.resultFor('n.md', first());
     eq('after a restart the saved result is used', [restored && restored.stdout, restored && api.evaluate(first(), restored).status], ['hi', 'ok']);
-    eq('a saved result counts for dependencies', P.dependencyState('n.md', P.metasFor(disk, 'n.md')[1].meta).blocked, false);
+    eq('a saved result counts for dependencies', P.prerequisiteState('n.md', P.metasFor(disk, 'n.md')[1].meta).blocked, false);
     return P.clearBlock('n.md', first());
   }).then(() => {
     eq('clearing removes the result from the note', [first().saved, P.resultFor('n.md', first())], [null, null]);
-    eq('and blocks dependents again', P.dependencyState('n.md', P.metasFor(disk, 'n.md')[1].meta).blocked, true);
+    eq('and blocks dependents again', P.prerequisiteState('n.md', P.metasFor(disk, 'n.md')[1].meta).blocked, true);
   });
 }).then(() => {
   // Revert and reset. Commands don't really run: spawnScript is replaced, and records what it was given.
@@ -439,10 +519,17 @@ gated.then((res) => {
     return P.revertBlock('n.md', m()[0]);
   }).then(() => {
     eq('a revert removes the saved result from the note', [m()[0].saved, m()[1].saved], [null, null]);
-    eq('dependents are blocked again', P.dependencyState('n.md', m()[1]).blocked, true);
+    eq('dependents are blocked again', P.prerequisiteState('n.md', m()[1]).blocked, true);
+    // Reset on a block with a revert command reverts it, and keeps the revert's output to show
+    P.results.set(P.keyFor('n.md', m()[0]), done('a'));
     return P.resetBlock('n.md', m()[0]);
   }).then((ok) => {
-    eq('reset clears the revert output too', [ok, P.reverts.has(P.keyFor('n.md', m()[0]))], [true, false]);
+    eq('reset reverts a block with a revert command', [ok, ran[ran.length - 1], P.resultFor('n.md', m()[0])], [true, 'rm -rf demo/a', null]);
+    eq('and shows what the revert did', P.reverts.get(P.keyFor('n.md', m()[0])).ok, true);
+    return P.resetBlock('n.md', m()[0]);
+  }).then((ok) => {
+    eq('resetting again clears the revert output', [ok, P.reverts.has(P.keyFor('n.md', m()[0]))], [true, false]);
+    eq('then there is nothing to reset', P.resetBlocker('n.md', m()[0]), "there's nothing to reset");
     // Reset without a revert command just clears; with dependents that have results, it refuses
     disk = disk.replace('revert: rm -rf demo/a\n', '');
     P.results.set(P.keyFor('n.md', m()[0]), done('a'));
@@ -450,12 +537,52 @@ gated.then((res) => {
     return P.resetBlock('n.md', m()[0]);
   }).then((ok) => {
     eq('reset refuses while a dependent has a result', [ok, !!P.resultFor('n.md', m()[0])], [false, true]);
+    eq('and says why', /first, which depend on it/.test(P.resetBlocker('n.md', m()[0])), true);
     ran.length = 0;
     return P.resetAll({ path: 'n.md' });
   }).then(() => {
     eq('reset all works bottom up', ran, ['rm -f demo/a/b']);
     eq('reset all clears every block', [P.resultFor('n.md', m()[0]), P.resultFor('n.md', m()[1])], [null, null]);
   });
+}).then(() => {
+  // Idempotency: a block that isn't idempotent runs once, until it's reset
+  const UO = '66666666-6666-4666-8666-666666666666';
+  const UL = '77777777-7777-4777-8777-777777777777';
+  disk = '```run\nid: ' + UO + '\nlang: bash\nidempotent: false\n---\nmkdir demo/once\n```\n'
+    + '```run\nid: ' + UL + '\nlang: bash\n---\nls demo\n```\n';
+  Object.assign(P, { results: new Map(), reverts: new Map(), revertProcs: new Map(), procs: new Map() });
+  const m = () => P.metasFor(disk, 'n.md').map(({ meta }) => meta);
+  const ran = [];
+  let exitCode = 0;
+  P.runBlock = (path, meta) => {
+    ran.push(meta.code);
+    const res = { done: true, startedAt: 1, durationMs: 1, exitCode, stdout: '', chunks: [], outputHash: 'h', cmdHash: 'h' };
+    P.results.set(P.keyFor(path, meta), res);
+    return Promise.resolve(res);
+  };
+  P.writePendingFiles = () => Promise.resolve();
+  eq('runnable before it has run', P.rerunBlocker('n.md', m()[0]), null);
+  return P.runCell('n.md', m()[0]).then(() => {
+    eq('can run once', ran, ['mkdir demo/once']);
+    eq('then it says why it cannot run again', /isn't idempotent and has already run\. Reset it/.test(P.rerunBlocker('n.md', m()[0])), true);
+    eq('an idempotent block can always run again', P.rerunBlocker('n.md', m()[1]), null);
+    return P.runCell('n.md', m()[0]);
+  }).then((res) => {
+    eq('running it again is refused', [res, ran.length], [null, 1]);
+    ran.length = 0;
+    return P.runAll({ path: 'n.md' });
+  }).then(() => {
+    eq('Run all keeps a run-once block that succeeded, and carries on', ran, ['ls demo']);
+    P.results.get(P.keyFor('n.md', m()[0])).exitCode = 1;
+    ran.length = 0;
+    return P.runAll({ path: 'n.md' });
+  }).then(() => {
+    eq('Run all stops at a run-once block that failed', ran, []);
+    return P.resetBlock('n.md', m()[0]);
+  }).then(() => {
+    eq('after a reset it can run again', P.rerunBlocker('n.md', m()[0]), null);
+    return P.runCell('n.md', m()[0]);
+  }).then(() => eq('and it runs', ran, ['mkdir demo/once']));
 }).then(() => {
   console.log(out.slice(sync).join('\n'));
   console.log('async tests finished');

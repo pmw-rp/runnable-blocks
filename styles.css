@@ -78,6 +78,7 @@
 .run-block-waiting-icon { display: inline-flex; }
 .run-block-waiting-icon svg { width: var(--icon-xs); height: var(--icon-xs); }
 .run-block-waiting-reason { color: var(--text-faint); }
+.run-block-recheck { margin-left: 8px; padding: 0 8px; height: auto; font-size: var(--font-ui-smaller); }
 
 .run-block-btn.run-block-hidden { display: none; }
 

@@ -222,7 +222,7 @@ func main() {
 
 ## Dependencies
 
-A block can depend on blocks above it, by listing their ids in `depends-on`. Until each of them has run successfully (passed its checks, or run cleanly if it has none), the block is **blocked**: it can't run, and it says what it's waiting for. To get a block's id for `depends-on`, use **Copy block id** in its **#** menu.
+A block can depend on blocks above it, by listing their ids in `depends-on`. Until each of them has run successfully (passed its checks, or run cleanly if it has none), the block is **blocked**: it can't run, and it says what it's waiting for. To get a block's id for `depends-on`, switch to source mode and copy its `id:` line.
 
 This block starts the chain:
 
@@ -268,9 +268,43 @@ depends-on:
 echo "Both dependencies are complete"
 ```
 
-## Revert and reset
+## Prerequisites
 
-A block can say how to undo what it did, with `revert:`. Blocks that have one show a **Revert** button (↶) once they've run. If the revert works, the block is back to not having run. Every block also has **Reset** (the eraser): it reverts the block if it can, then clears its output.
+`depends-on` is one kind of prerequisite. A block's `requires:` list can also name a **command** that has to succeed, such as checking that a tool is installed or a file exists, and a **pattern** that the block's own code has to match, for an exercise where the learner writes the command. Each entry can have a `message` saying what to do. A command is checked when the note opens, and again when you run the block. If it fails, press **Check again** once you've fixed it.
+
+This block needs `git`, and the file the first block in [[#Dependencies]] creates. Until you've run that block, it's blocked; then press Check again:
+
+```run
+id: c81f3cc3-e55c-4687-833d-2167f7d9eb99
+lang: bash
+requires:
+  - command: command -v git
+    message: Install git
+  - command: test -f demo/started.txt
+    message: Run the first block in Dependencies, to create demo/started.txt
+---
+git --version
+echo "demo/started.txt says $(cat demo/started.txt)"
+```
+
+Exercise: replace the comment with a command that counts the lines in `demo/started.txt`. The block stays blocked until what you've written uses `wc -l`:
+
+```run
+id: 2d332f19-0d86-45bc-b6d7-5d8d8f591dd2
+lang: bash
+editable: true
+requires:
+  - block: 3d7bd56a-63be-49af-97e8-49bd9794886a
+  - matches: '^\s*wc\s+-l\b'
+    flags: m
+    message: Count the lines with wc -l
+---
+# your command here
+```
+
+## Reset and revert
+
+Every block has a **Reset** button. A block can also say how to undo what it did, with `revert:`. Its Reset button then shows ↶, and Reset runs that command: if it works, the block is back to not having run, and shows what was undone. A block without a `revert:` shows the eraser, and Reset just clears its result.
 
 Run these two blocks. The second depends on the first:
 
@@ -294,7 +328,7 @@ cp demo/scratch/greeting.txt demo/scratch/copy.txt
 ls demo/scratch
 ```
 
-Now try reverting the first block. You can't yet: like undo, you revert in reverse order, and the second block depends on the first. Revert the second block, then the first. **Reset all blocks in current note**, in the command palette, does the whole note from the bottom up.
+Now try resetting the first block. You can't yet: like undo, you go in reverse order, and the second block depends on the first. Reset the second block, then the first. **Reset all blocks in current note**, in the command palette, does the whole note from the bottom up.
 
 A file block's revert gets the file's path in `$FILE`, as its check does:
 
@@ -304,6 +338,32 @@ path: demo/notes.txt
 revert: rm -f "$FILE"
 ---
 Notes written by a file block.
+```
+
+## Idempotency
+
+Most blocks can be run as often as you like: they're *idempotent*. Some would fail, or do harm, the second time, such as creating something that then already exists. Mark those `idempotent: false`. They show a "runs once" icon, and once they've run, ▶ is disabled until you reset them. **Run all** skips them if they succeeded, and keeps their result.
+
+`mkdir` fails if the folder already exists, so this block can only run once. Run it, and ▶ is disabled. **Reset** runs its revert, which removes the folder, and then it can run again:
+
+```run
+id: bd19e444-ee86-4d44-822c-6abe7014016f
+lang: bash
+idempotent: false
+revert: rmdir demo/once
+---
+mkdir demo/once
+echo "Created demo/once"
+```
+
+`mkdir -p` doesn't mind if the folder already exists, so this block is idempotent, and can run any number of times:
+
+```run
+id: 087d22f4-9759-4acb-8287-d3b03dd61411
+lang: bash
+---
+mkdir -p demo/again
+echo "demo/again exists"
 ```
 
 ## Inside a callout

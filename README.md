@@ -29,8 +29,10 @@ The header can also open with its own `---`, like note frontmatter. Only the fir
 | `editable` | `true` turns the code into an editor (see below). |
 | `timeout` | Seconds before the block is killed. Overrides the global timeout. |
 | `manual` | `true` leaves the block out of **Run all**, e.g. a teardown step. Works on file blocks too. |
-| `depends-on` | The id of a block above, or a list of ids, that must have run successfully first (see [Dependencies](#dependencies)). |
-| `revert` | A command that undoes what the block did: a string, or `lang` and `run` (see [Revert and reset](#revert-and-reset)). |
+| `idempotent` | `false` for a block that would fail, or do harm, if run a second time. It then runs once, until it's reset (see [Idempotency](#idempotency)). Defaults to `true`. |
+| `depends-on` | The id of a block above, or a list of ids, that must have run successfully first (see [Prerequisites](#prerequisites)). |
+| `requires` | What has to be true before the block can run: blocks that have run, commands that succeed, patterns the code matches (see [Prerequisites](#prerequisites)). |
+| `revert` | A command that undoes what the block did: a string, or `lang` and `run`. **Reset** runs it (see [Reset and revert](#reset-and-revert)). |
 | `expect.output` | Exact expected stdout. |
 | `expect.md5` | Expected MD5 of stdout. |
 | `expect.command-md5` | Expected MD5 of the code that ran. |
@@ -62,7 +64,7 @@ service:
 | `lang` | Syntax highlighting. Defaults to the file extension. |
 | `editable` | `true` lets the learner edit the file, which is then kept in sync with the file on disk (see below). |
 | `learner` | The learner's current version of the file. Written by the plugin; you don't need to set it. |
-| `timeout`, `id`, `depends-on`, `revert` | As for `run` blocks. A file block's revert gets `$FILE`, as its check does. |
+| `timeout`, `id`, `depends-on`, `requires`, `revert`, `idempotent` | As for `run` blocks. A file block's revert gets `$FILE`, as its check does. |
 | `expect.content` | Exact expected file content. |
 | `expect.md5` | Expected MD5 of the file content. |
 | `check.run` | Command to run after writing. `$FILE` holds the file's absolute path. |
@@ -80,7 +82,7 @@ Unknown keys inside `expect` or `check` show a warning on the block. The old `ch
 - The content below `---` stays the author's original. The learner's version is stored in the header as `learner:`, so it survives restarts.
 - Typing writes the file and runs its checks about half a second after the learner stops. The note is updated when the editor loses focus, because updating it redraws the block.
 - If the file changes on disk some other way (a `run` block's `sed -i`, another editor), the block shows the new content and stores it in the note.
-- Opening a note creates a missing file. If the file on disk differs from the block, the disk version is taken as the learner's latest. The file is then checked as it is, so wrong files show red straight away. That runs the block's `check` command; turn off **Check editable file blocks when a note opens** if you'd rather it only ran after an edit.
+- Opening a note creates a missing file, unless Reset deleted it this session. If the file on disk differs from the block, the disk version is taken as the learner's latest. The file is then checked as it is, so wrong files show red straight away. That runs the block's `check` command; turn off **Check when a note opens** if you'd rather it only ran after an edit.
 - **Reset** goes back to the original, removes `learner:` and rewrites the file.
 
 **Writing:**
@@ -110,7 +112,14 @@ printf %s 'hello' | md5      # macOS
 printf %s 'hello' | md5sum   # Linux
 ```
 
-You rarely need to compute hashes by hand. Run the block (or write the file), open the **#** menu, and choose a **Pin** item (`expect.md5`, `expect.command-md5` or `check.expect.md5`). It writes the hash into the header and leaves the rest of the header as you wrote it.
+You rarely need to compute hashes by hand. Run the block (or write the file), then switch to source mode: its `result:` has every hash, ready to copy into the header.
+
+| To check… | Copy | Into |
+|---|---|---|
+| a `run` block's output | `result.output-md5` | `expect.md5` |
+| the exact command | `result.command-md5` | `expect.command-md5` |
+| a file block's content | `result.content-md5` | `expect.md5` |
+| a file block's check output | `result.check.output-md5` | `check.expect.md5` |
 
 YAML reads unquoted values like `0.10` or `1e3` as numbers. Quote expected values that must stay exactly as written (`output: "0.10"`). Also quote commands that contain `: ` or ` #`, or put them in a `|` block. If a header isn't valid YAML, or uses a setting the plugin doesn't know, the block shows a warning.
 
@@ -135,7 +144,7 @@ id: 3f2b8c1e-9d4a-4c7e-8b1f-2a6d5e9c0b47
 
 Edits, output and results belong to that id, so:
 - **Identical blocks stay separate,** like two exercises that both start as `# your command here`.
-- **A block keeps its output** when its code changes or a hash is pinned.
+- **A block keeps its output** when its code or header changes.
 
 **If a block hasn't got one,** it gets one the first time it runs, and anything it had before (a draft, output) moves to the new id. That covers ▶, the write button, Shift+Enter, Run all, Save and pinning a hash. A synced file block gets its id when you leave its editor, in the same note edit that saves your work. Nothing is written to a note just because a block is displayed.
 
@@ -143,9 +152,34 @@ Edits, output and results belong to that id, so:
 
 To generate a UUID yourself, use `uuidgen | tr A-Z a-z` on macOS or Linux.
 
-### Dependencies
+### Prerequisites
 
-A block can depend on blocks above it in the same note. List their ids in `depends-on`, as one id or a list:
+A block can have prerequisites: things that have to be true before it can run. There are three kinds:
+
+| Kind | Met when | Typical use |
+|---|---|---|
+| `block` | That block, above in the same note, has run successfully. | Deploy before you configure. |
+| `command` | The command exits 0. | A tool is installed, a file exists, a cluster is up. |
+| `matches` | The block's own code matches the regular expression. | An exercise where the learner writes the command. |
+
+List them in `requires:`, in the order you want them reported. Each entry can have a `message`, which is shown to the learner instead of the default description:
+
+```yaml
+requires:
+  - block: 3d7bd56a-63be-49af-97e8-49bd9794886a
+    message: Deploy the cluster first
+  - command: command -v kubectl
+    message: Install kubectl
+  - matches: '^\s*kubectl\s+scale\b'
+    flags: m
+    message: Use kubectl scale
+```
+
+- **block**: the block's id. A bare id, `- 3d7bd56a-…`, is short for `- block: 3d7bd56a-…`.
+- **command**: run with the default language, in the same folder and with the same `PATH` as the note's blocks. Set `lang` to use another interpreter, and `timeout` for longer than 10 seconds.
+- **matches**: a JavaScript regular expression, tested against the block's code as the learner types it, or against the learner's version of an editable file block. `flags` are the usual ones: `m` makes `^` and `$` match at each line, `i` ignores case. Quote the pattern in YAML, with single quotes so backslashes stay as they are. Without a `message`, the learner just sees "The code isn't in the expected form yet", so the pattern doesn't give the answer away.
+
+`depends-on` is shorthand for block entries, and can be used alongside `requires`:
 
 ```yaml
 depends-on: 3d7bd56a-63be-49af-97e8-49bd9794886a
@@ -157,17 +191,19 @@ depends-on:
   - 99579044-9bb4-4e1c-93fc-1604cef37e39
 ```
 
-**When a block is blocked:** until every block it depends on has run successfully (a green marker: it passed its checks, or ran cleanly if it has none), the block is *blocked*. That includes results saved in the note from an earlier session (see [Saved results](#saved-results)). While blocked:
+**When a block is blocked:** until every prerequisite is met, the block is *blocked*. A block prerequisite counts as met once that block has run successfully (a green marker: it passed its checks, or ran cleanly if it has none), including results saved in the note from an earlier session (see [Saved results](#saved-results)). While blocked:
 - It has a grey **Blocked** label and a dashed border, and its ▶ (or write) button is disabled.
-- A **Waiting for** line names each unfinished dependency, its line in the note, and why: not run yet, running, failed its checks, exit 1, and so on. The line updates as dependencies finish.
-- ▶, Shift+Enter and the write button refuse to run it, with a notice saying what to run first.
+- A **Before this can run** line lists each unmet prerequisite: a block's line in the note and why it doesn't count yet (not run yet, running, failed its checks, exit 1, …), a command and how it failed, or a pattern's message. The line updates as blocks finish and as the learner types.
+- ▶, Shift+Enter and the write button refuse to run it, with a notice saying what's needed.
 - **Run all** stops at a blocked block, for example one depending on a `manual` block, and says why.
 
-If a dependency fails after the block ran, the block keeps its own result, but it's blocked again until the dependency succeeds.
+If a prerequisite stops being met after the block ran, the block keeps its own result, but it's blocked again until it's met.
 
-**Getting an id:** use **Copy block id** in a block's **#** menu. A block gets its id the first time it runs, so run it once before copying.
+**When commands are checked:** when the note opens, and again each time the block runs, including in Run all, since what was installed or running earlier may not be now. Blocks with the same command share one check. If a command fails, fix the problem and press **Check again** on the Before this can run line. With **Check when a note opens** turned off in settings, commands only run when you press ▶, so nothing runs just because a note was opened.
 
-**Problems that show:** an id that isn't a UUID gets a warning. An id that isn't in the note, or a block below the dependent one, shows in the Waiting for line.
+**Getting an id:** switch to source mode and copy the block's `id:` line. A block gets its id the first time it runs, so run it once first if it hasn't got one.
+
+**Problems that show:** a block id that isn't a UUID, an entry with none or more than one of `block`, `command` and `matches`, an unknown key in an entry, and a pattern that isn't a valid regular expression each get a warning; a bad pattern is ignored. An id that isn't in the note, or a block below the dependent one, shows in the Before this can run line.
 
 ### Saved results
 
@@ -200,9 +236,28 @@ result:
 - The note changes every time a block finishes. That makes noisy diffs, and can conflict with Obsidian Sync or git if you're editing the same note elsewhere.
 - Output can contain secrets that commands print, such as tokens or passwords. Those end up in the note, and go wherever it's synced or committed.
 
-### Revert and reset
+### Idempotency
 
-A block can say how to undo what it did:
+A block is *idempotent* if running it again is harmless, like `mkdir -p`. Blocks are assumed to be, unless they say otherwise. Mark one that isn't, such as `mkdir`, creating a resource, or appending to a file, with `idempotent: false`:
+
+```yaml
+idempotent: false
+```
+
+**Before it runs,** the block shows a "runs once" icon (↻1) in its toolbar.
+
+**Once it has a result,** from this session or saved in the note:
+- ▶ is disabled, and a line under the toolbar says why.
+- ▶ and Shift+Enter refuse, with a notice.
+- To run it again, **Reset** it. If it has a `revert:`, Reset undoes what it did first. Without one, Reset only clears the result, so the block can run again; whether that's safe is up to you.
+
+**Run all** skips a run-once block that has already succeeded, and keeps its result, so running a whole page twice carries on past it. If its result was a failure, Run all stops there and asks you to reset it.
+
+A run-once file block that has been written isn't rewritten automatically before the `run` blocks below it.
+
+### Reset and revert
+
+Every block has a **Reset** button. What it does depends on whether the block says how to undo itself, with `revert:`:
 
 ```yaml
 revert: rm -rf demo/scratch
@@ -216,29 +271,31 @@ revert:
     shutil.rmtree("demo/scratch", ignore_errors=True)
 ```
 
-**Revert (↶):** shown on blocks with a `revert:` command. It's enabled once the block has run, including a result saved from an earlier session. It runs the command, with a pulsing yellow **Reverting…** bar.
-- **If it works,** the block's result is removed, on screen and from the note. The block is back to not having run, and shows **Reverted**, with the revert's output. Blocks that depend on it are blocked again.
+**With a `revert:` (the button shows ↶),** Reset runs the revert command, with a pulsing yellow **Reverting…** bar:
+- **If it works,** the block's result is removed, on screen and from the note. The block is back to not having run, and it shows **Reverted** with the revert's output, so you can see what was undone. Blocks that depend on it are blocked again. Press Reset once more to clear that record.
 - **If it fails,** the block keeps its result, and the revert's output shows underneath in orange, with what went wrong.
 
-**Undo order:** you can't revert a block while a block that depends on it still has a result. Revert or reset the dependent block first. The button says why when it's unavailable.
+**Without a `revert:` (the button shows the eraser),** Reset clears the block's result, on screen and from the note.
 
-**Reset (the eraser):** on every block. If the block has run and has a `revert:`, Reset reverts it first, and stops there if the revert fails. Then it clears all of the block's output, including the result saved in the note. A block without a `revert:` is just cleared, but not while a block that depends on it still has a result.
+**File blocks** also have their file deleted, after the revert (if any) and clearing the result, so the lab is back to before the block was written. Editable file blocks also lose the learner's edits: the block goes back to the author's original. To be safe, the file is only deleted while it's still the one the block wrote; if something else has changed it since, it's kept and a notice says so. A deleted file stays deleted until the block writes it again: when the learner edits it, when you press write or **Restore the original code**, or when a run block below runs and needs it. Reset is available on a file block whenever its file is on disk or the learner has edited it, even with no result.
 
-**Reset all blocks in current note:** in the command palette. It does the whole note from the bottom up, which reverts blocks in the right order. With `revert:` on its blocks, a setup page can tear its lab down this way.
+**Undo order:** Reset is unavailable while a block that depends on this one still has a result. Reset the dependent first, as with undo. It's also unavailable while the block is running, or when there's nothing to reset. The button's tooltip says which.
 
-The **Restore the original code** button (↺), on editable blocks, is separate: it undoes your edits to the code, not what the block did.
+**Reset all blocks in current note:** in the command palette. It resets the whole note from the bottom up, which reverts blocks in the right order. With `revert:` on its blocks, a setup page can tear its lab down this way.
+
+The **Restore the original code** button (↺), on editable blocks, is separate: it undoes your edits to the code, not what the block did. On a file block it writes the original back and checks it, rather than deleting the file, and doesn't run the revert.
 
 ### Writing an exercise
 
 1. Write the correct solution in the block and run it.
-2. Pin the output MD5 (or check MD5). Pin the command MD5 too if the exact command matters.
+2. In source mode, copy the output MD5 from its `result:` into `expect.md5`, or `check.expect.md5` for a check. Copy the command MD5 into `expect.command-md5` too, if the exact command matters.
 3. Replace the solution with a placeholder and set `editable: true`. The learner types an answer into the block, runs it, and sees Pass or Fail.
 
 ## Commands
 
 - **Run all blocks in current note**: runs every block in order, skipping `manual: true` blocks. Like a notebook, it stops at the first block that fails or errors, since later blocks usually depend on it.
 - **Reset all blocks in current note**: resets every block that has run, from the bottom of the note up, so a block is reverted before the blocks it depends on. Stops at the first block that can't be reset.
-- **Clear all outputs in current note**: clears every block's result, on screen and in the note, without reverting anything.
+- **Clear all outputs in current note**: clears every block's result, on screen and in the note, without reverting anything. Use it with care on blocks that have a `revert:`: their effects stay, but the note no longer says they ran.
 
 ## Settings
 
@@ -248,7 +305,7 @@ The **Restore the original code** button (↺), on editable blocks, is separate:
 - **Extra PATH entries**: Obsidian doesn't load your shell profile. `/opt/homebrew/bin` and `/usr/local/bin` are added by default.
 - **Working directory**: the note's folder (default) or the vault root.
 - **Timeout**: 30 s by default.
-- **Check editable file blocks when a note opens**: on by default. Runs their check commands without a click.
+- **Check when a note opens**: on by default. Runs editable file blocks' check commands, and command prerequisites, without a click.
 - **Allow file blocks to write outside the vault**: off by default.
 
 Scripts also get the `OBSIDIAN_VAULT` and `OBSIDIAN_NOTE` environment variables (absolute paths).
