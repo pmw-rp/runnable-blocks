@@ -130,9 +130,11 @@ Readers can see the header, including `expect` answers, in source mode. Use the 
 With `editable: true`, the block shows a text editor instead of highlighted code:
 
 - **Shift+Enter** or **Cmd/Ctrl+Enter** runs the block (or writes the file). **Tab** indents.
-- Edits stay in memory until Obsidian restarts. The note file isn't changed.
-- Once you edit a block, an *edited* marker appears with **Reset** (back to the note's version) and **Save** (writes your edits into the note, keeping the header). Editable *file* blocks save themselves instead (see above).
-- "Run all" uses the edited code too.
+- Your version is saved into the block's header, as `learner:`, when you leave the editor and when the block runs. The block's content, below `---`, stays the author's original, so it's never lost. The rendered view hides the header, so you see your version in the editor.
+- Once you edit a block, an *edited* marker appears with **Restore the original code** (↺), which puts the original back, in the editor and the note.
+- **Reset** also puts the original back, as well as clearing the result, and running the block's revert if it has one.
+- "Run all" uses your version.
+- Editable *file* blocks work the same way, and also keep the file on disk in sync (see above).
 
 ### Block ids
 
@@ -146,7 +148,7 @@ Edits, output and results belong to that id, so:
 - **Identical blocks stay separate,** like two exercises that both start as `# your command here`.
 - **A block keeps its output** when its code or header changes.
 
-**If a block hasn't got one,** it gets one the first time it runs, and anything it had before (a draft, output) moves to the new id. That covers ▶, the write button, Shift+Enter, Run all, Save and pinning a hash. A synced file block gets its id when you leave its editor, in the same note edit that saves your work. Nothing is written to a note just because a block is displayed.
+**If a block hasn't got one,** it gets one the first time it runs, and anything it had before (a draft, output) moves to the new id. That covers ▶, the write button, Shift+Enter and Run all. An editable block gets its id when you leave its editor, in the same note edit that saves your work. Nothing is written to a note just because a block is displayed.
 
 **An id that isn't a UUID,** such as an old short id, or a duplicate, such as a pasted copy of a block, counts as missing. The block shows a warning, and gets a new UUID the first time it runs. The first of two blocks with the same id keeps it.
 
@@ -230,7 +232,7 @@ result:
 - **`file` blocks:** the content's MD5, and the check's exit code and output MD5. Check output is never shown, so it isn't saved either.
 
 **When it's saved:**
-- when a block you ran finishes: ▶, the write button, Shift+Enter or Run all
+- when a block you ran finishes: ▶, the write button, Shift+Enter or Run all. An editable block's code is saved with it, as `learner:`, so the note says what produced the result.
 - for an editable file block, when you leave its editor, together with your edits
 - not for checks that run automatically when a note opens, so opening a note still doesn't change it
 

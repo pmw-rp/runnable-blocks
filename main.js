@@ -253,11 +253,11 @@ function setHeaderEntry(source, key, value) {
   return lines.join('\n');
 }
 
-// Replaces a block body's content, keeping its header as written.
-function withContent(source, content) {
-  const parts = splitHeader(source);
-  if (!parts.header) return content;
-  return [...parts.lines.slice(0, parts.sep + 1), content].join('\n');
+// A block body with its `learner:` entry set to `code`, or removed when `code` is the original.
+// `now` is the block as the note says now, not as it rendered: an earlier save may have changed it.
+function withLearner(now, body, code) {
+  const want = code === now.original ? null : code;
+  return now.learner === want ? body : setHeaderEntry(body, 'learner', want);
 }
 
 // Writes `body` back into `block` within the note's text, restoring any callout/list prefix.
@@ -585,12 +585,7 @@ class RunBlock extends MarkdownRenderChild {
       this.editedEl = bar.createSpan({ cls: 'run-block-edited', text: 'edited' });
       this.resetBtn = this.button(bar, 'rotate-ccw', 'Restore the original code', () => (this.synced
         ? this.plugin.resetFile(this.ctx.sourcePath, this.meta)
-        : this.plugin.setDraft(this.key, this.meta, null)));
-      // Synced file blocks save themselves into the note; run blocks are saved on request.
-      if (!this.synced) {
-        this.saveBtn = this.button(bar, 'save', 'Save edits to note', () =>
-          this.plugin.saveDraft(this.ctx.sourcePath, this.meta));
-      }
+        : this.plugin.restoreOriginal(this.ctx.sourcePath, this.meta)));
     }
     // Reset reverts what the block did, if it has a revert command (↶), or just clears it (eraser).
     this.resetBlockBtn = this.button(bar, this.meta.revert ? 'undo-2' : 'eraser', 'Reset',
@@ -693,8 +688,9 @@ class RunBlock extends MarkdownRenderChild {
         ta.setSelectionRange(refocus.start, refocus.end);
       });
     }
-    // Saving into the note re-renders the block, so synced blocks only do it once the learner moves on.
-    if (this.synced) ta.addEventListener('blur', () => this.plugin.persistLearner(this.ctx.sourcePath, this.meta));
+    // The learner's version is saved into the note's `learner:` entry, keeping the original below
+    // "---". Saving re-renders the block, so it's done once the learner moves on, not as they type.
+    ta.addEventListener('blur', () => this.plugin.persistLearner(this.ctx.sourcePath, this.meta));
   }
 
   scheduleRender() {
@@ -764,8 +760,8 @@ class RunBlock extends MarkdownRenderChild {
     }
     if (this.editor) {
       const code = this.plugin.currentCode(this.key, this.meta);
-      const edited = this.synced ? code !== this.meta.original : this.plugin.drafts.has(this.key);
-      for (const node of [this.editedEl, this.resetBtn, this.saveBtn]) if (node) node.toggleClass('run-block-hidden', !edited);
+      const edited = code !== this.meta.original;
+      for (const node of [this.editedEl, this.resetBtn]) if (node) node.toggleClass('run-block-hidden', !edited);
       // Another view of the same note, or the file on disk, may have changed the content.
       if (document.activeElement !== this.editor && normalize(this.editor.value) !== code) {
         this.editor.value = code;
@@ -845,6 +841,7 @@ class RunBlock extends MarkdownRenderChild {
     this.resetBlockBtn.disabled = !!blocker;
     this.resetBlockBtn.setAttr('aria-label', blocker ? `Reset: unavailable, because ${blocker}`
       : this.synced ? `Reset: ${this.meta.revert && res ? 'undo what this block did, then ' : ''}discard the edits and delete ${this.meta.path}`
+      : this.meta.editable ? `Reset: ${this.meta.revert && res ? 'undo what this block did, ' : ''}${res ? 'clear its result, ' : ''}and put the original code back${again}`
       : this.meta.kind === 'file' ? `Reset: ${this.meta.revert && res ? 'undo what this block did, then ' : ''}clear its result and delete ${this.meta.path}${again}`
       : this.meta.revert && res ? `Reset: undo what this block did, then clear its result${again}`
       : res ? `Reset: clear this block's result${again}`
@@ -1155,6 +1152,10 @@ class RunnableBlocksPlugin extends Plugin {
     const text = (v) => (v == null ? null : normalize(String(v)));
     const hash = (v) => (v == null ? null : String(v).trim().toLowerCase());
     const warnings = parts.unknown.map((k) => `Unknown setting "${k}" in this block's header.`);
+    // An editable block's learner version lives in the header, as `learner:`. The content below
+    // "---" stays the author's original, so Reset and Restore can always bring it back.
+    const learner = h.editable === true && h.learner != null ? normalize(String(h.learner)) : null;
+    const code = learner !== null ? learner : parts.content;
     if (parts.error) warnings.push(parts.error);
     if (h.id != null && !UUID_RE.test(String(h.id))) {
       warnings.push(`This block's id, "${h.id}", isn't a UUID. It gets a new one the first time it runs.`);
@@ -1191,8 +1192,10 @@ class RunnableBlocksPlugin extends Plugin {
       revert: null,
       timeout: Number(h.timeout) || null,
       source: normalize(source),
-      code: parts.content,
-      cmdHash: md5(parts.content),
+      original: parts.content,
+      learner,
+      code,
+      cmdHash: md5(code),
       warnings,
     };
     if (kind === 'file') {
@@ -1203,15 +1206,7 @@ class RunnableBlocksPlugin extends Plugin {
       base.revert = this.parseRevert(h.revert, this.settings.defaultLang, warnings);
       // A check's expect has the same shape as a run block's: the command's output, or its MD5.
       const checkExpect = c ? asMap(c.expect, ['check', 'expect'], ['output', 'md5']) : {};
-      // An editable file block's learner content lives in the header; the content below "---" stays
-      // the author's original.
-      const learner = base.editable && h.learner != null ? normalize(String(h.learner)) : null;
-      const code = learner !== null ? learner : parts.content;
       return Object.assign(base, {
-        original: parts.content,
-        learner,
-        code,
-        cmdHash: md5(code),
         path: target,
         lang: String(h.lang || LANG_FOR_EXT[ext] || ext || 'text').toLowerCase(),
         expect: { content: text(expect.content), md5: hash(expect.md5) },
@@ -1613,21 +1608,25 @@ class RunnableBlocksPlugin extends Plugin {
     }, 500));
   }
 
-  // Saves a synced file block's current content into the note's `learner:` header entry, or removes
-  // the entry when the content is back to the original.
+  // Saves an editable block's current code into the note's `learner:` header entry, or removes the
+  // entry when the code is back to the original. The original, below "---", is never changed.
   async persistLearner(sourcePath, meta) {
     const code = this.currentCode(this.keyFor(sourcePath, meta), meta);
     // The block gets its id in the same edit, so the note is only re-rendered once.
     return this.assignId(sourcePath, meta, (body, block) => {
-      // Compare with what the note says now, not `meta`: an earlier save (e.g. on blur) may have
-      // changed it since this block rendered.
-      const now = this.makeMeta(block.info, block.source);
-      const want = code === now.original ? null : code;
-      let updated = now.learner === want ? body : setHeaderEntry(body, 'learner', want);
+      let updated = withLearner(this.makeMeta(block.info, block.source), body, code);
       const res = this.results.get(this.keyFor(sourcePath, meta));
       if (res && res.done && !res.saved) updated = setHeaderEntry(updated, 'result', savedResult(meta, res));
       return updated;
     });
+  }
+
+  // Restore (↺) on an editable run block: back to the original code, in the editor and the note.
+  async restoreOriginal(sourcePath, meta) {
+    const key = this.keyFor(sourcePath, meta);
+    this.drafts.set(key, meta.original);
+    this.notify(key);
+    await this.persistLearner(sourcePath, meta);
   }
 
   async resetFile(sourcePath, meta) {
@@ -1720,28 +1719,10 @@ class RunnableBlocksPlugin extends Plugin {
   }
 
   setDraft(key, meta, value) {
-    const code = value === null ? meta.code : normalize(value);
+    const code = value === null ? meta.original : normalize(value);
     if (code === meta.code) this.drafts.delete(key);
     else this.drafts.set(key, code);
     this.notify(key);
-  }
-
-  async saveDraft(sourcePath, meta) {
-    if (!this.drafts.has(this.keyFor(sourcePath, meta))) return;
-    meta = await this.assignId(sourcePath, meta);
-    const key = this.keyFor(sourcePath, meta);
-    if (!this.drafts.has(key)) return;
-    const code = this.drafts.get(key);
-    let found = false;
-    await this.editNote(sourcePath, (data) => {
-      const block = this.locate(data, meta);
-      if (!block) return data;
-      found = true;
-      return replaceBody(data, block, withContent(block.source, code));
-    });
-    // The draft is dropped once the block re-renders with the saved code (settleDraft), so the
-    // editor doesn't briefly fall back to the old code in between.
-    new Notice(found ? 'Saved edits to note.' : 'Could not find this block in the note.');
   }
 
   attach(widget) {
@@ -2053,7 +2034,12 @@ class RunnableBlocksPlugin extends Plugin {
     const key = this.keyFor(sourcePath, meta);
     const typing = [...(this.widgets.get(key) || [])].find((w) => w.editor && w.editor === document.activeElement);
     if (typing) this.refocus = { key, start: typing.editor.selectionStart, end: typing.editor.selectionEnd };
-    await this.assignId(sourcePath, meta, (body) => setHeaderEntry(body, 'result', savedResult(meta, res)));
+    // An editable block's code is saved with its result, so the note says what produced it.
+    const code = this.currentCode(key, meta);
+    await this.assignId(sourcePath, meta, (body, block) => {
+      const updated = setHeaderEntry(body, 'result', savedResult(meta, res));
+      return meta.editable ? withLearner(this.makeMeta(block.info, updated), updated, code) : updated;
+    });
   }
 
   // Blocks that depend on this one and still have a result. Like undo, they have to be reverted first.
@@ -2096,7 +2082,7 @@ class RunnableBlocksPlugin extends Plugin {
     const key = this.keyFor(sourcePath, meta);
     if (this.procs.has(key) || this.revertProcs.has(key)) return "it's running";
     const res = this.resultFor(sourcePath, meta);
-    const edited = this.isSynced(meta) && this.currentCode(key, meta) !== meta.original;
+    const edited = meta.editable && this.currentCode(key, meta) !== meta.original;
     const onDisk = meta.kind === 'file' && ['same', 'differs'].includes(this.diskState(sourcePath, meta).state);
     if (!res && !this.reverts.has(key) && !edited && !onDisk) return 'there\'s nothing to reset';
     const dependents = res ? this.activeDependents(sourcePath, meta) : [];
@@ -2151,8 +2137,9 @@ class RunnableBlocksPlugin extends Plugin {
       return false;
     }
     const res = this.resultFor(sourcePath, meta);
-    const restore = this.isSynced(meta);
-    // Clearing the result re-renders the block, which would check the learner's file again.
+    // Editable blocks go back to the author's original. Clearing the result re-renders the block,
+    // which would check a synced file block's file again, so that's held off meanwhile.
+    const restore = meta.editable;
     if (restore) this.resetting.add(key);
     try {
       let ok = true;
@@ -2177,7 +2164,7 @@ class RunnableBlocksPlugin extends Plugin {
     return meta.kind === 'file' && meta.editable;
   }
 
-  // Part of resetting a synced file block: the learner's edits are removed from the note.
+  // Part of resetting an editable block: the learner's edits are removed from the note.
   async discardEdits(sourcePath, meta) {
     const key = this.keyFor(sourcePath, meta);
     clearTimeout(this.writeTimers.get(key));

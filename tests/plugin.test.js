@@ -123,7 +123,7 @@ class FileSystemAdapter { getBasePath() { return '/vault'; } }
 const req = (m) => (m === 'obsidian' ? { Plugin: Stub, PluginSettingTab: Stub, MarkdownRenderChild: Stub, TextFileView: Stub, TFile, MarkdownView, FileSystemAdapter, parseYaml, stringifyYaml, Notice: class { setMessage() {} hide() {} } }
   : m === 'crypto' ? fakeCrypto : m === 'path' ? fakePath : m === 'fs' ? fakeFs : {});
 const api = new Function('require', 'module', 'setTimeout', 'clearTimeout', 'window', src + `
-return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withContent, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
+return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
 
 const out = [];
 const eq = (name, a, b) => {
@@ -176,8 +176,6 @@ eq('sibling deeper lines not matched', api.setHeaderValue('check:\n  run: |\n   
   'check:\n  expect:\n    md5: z\n  run: |\n    expect: no\n  lang: py\n---\nx');
 
 // Content replacement
-eq('withContent keeps header', api.withContent('id: a\nlang: bash\n---\nold', 'new\ncode'), 'id: a\nlang: bash\n---\nnew\ncode');
-eq('withContent without header', api.withContent('old', 'new'), 'new');
 eq('replaceBody restores callout prefix', api.replaceBody('> ```run\n> old\n> ```', { lineStart: 0, lineEnd: 2, prefix: '> ' }, 'id: a\n\n---\nx'), '> ```run\n> id: a\n>\n> ---\n> x\n> ```');
 
 // The code file view's extensions
@@ -487,6 +485,40 @@ gated.then((res) => {
     files['/vault/demo/b.txt'] = 'plain\n';
     P.results.clear();
     eq('a file block whose file is on disk can be reset, with no result', P.resetBlocker('n.md', fm()), null);
+    // An editable run block: the learner's answer goes in `learner:`, and the original stays.
+    disk = '```run\nid: 44444444-4444-4444-8444-444444444444\nlang: bash\neditable: true\n---\n# your command here\n```\n';
+    P.results.clear();
+    P.drafts.clear();
+    eq('an editable run block starts with its original', [fm().code, fm().original, fm().learner], ['# your command here', '# your command here', null]);
+    P.setDraft(P.keyFor('n.md', fm()), fm(), 'echo answer');
+    return P.persistLearner('n.md', fm());
+  }).then(() => {
+    eq('leaving the editor saves the answer as learner', [fm().learner, fm().code], ['echo answer', 'echo answer']);
+    eq('and keeps the original below ---', fm().original, '# your command here');
+    P.settleDraft(P.keyFor('n.md', fm()), fm());
+    eq('the saved answer counts as edited, so it can be reset', P.resetBlocker('n.md', fm()), null);
+    P.setDraft(P.keyFor('n.md', fm()), fm(), 'echo better answer');
+    const res = { done: true, startedAt: 1000, durationMs: 5, exitCode: 0, stdout: 'better answer\n', chunks: [], outputHash: 'h:better answer', cmdHash: 'h:echo better answer' };
+    P.results.set(P.keyFor('n.md', fm()), res);
+    return P.persistResult('n.md', fm(), res);
+  }).then(() => {
+    eq('running saves the answer with its result', [fm().learner, fm().saved && fm().saved.stdout], ['echo better answer', 'better answer']);
+    eq('the original is still there', fm().original, '# your command here');
+    P.settleDraft(P.keyFor('n.md', fm()), fm());
+    return P.resetBlock('n.md', fm());
+  }).then(() => {
+    eq('Reset puts the original code back', [fm().learner, fm().code, fm().saved], [null, '# your command here', null]);
+    eq('and clears the result', P.results.has(P.keyFor('n.md', fm())), false);
+    P.settleDraft(P.keyFor('n.md', fm()), fm());
+    eq('then there is nothing to reset', P.resetBlocker('n.md', fm()), "there's nothing to reset");
+    P.setDraft(P.keyFor('n.md', fm()), fm(), 'echo again');
+    return P.persistLearner('n.md', fm());
+  }).then(() => {
+    P.settleDraft(P.keyFor('n.md', fm()), fm());
+    return P.restoreOriginal('n.md', fm());
+  }).then(() => {
+    eq('Restore puts the original code back too', [fm().learner, fm().code], [null, '# your command here']);
+    eq('a learner entry on a block that is not editable is ignored', P.makeMeta('run', 'lang: bash\nlearner: echo x\n---\necho y').code, 'echo y');
   });
 }).then(() => {
   // Results saved in the note: after a run, and still there after a restart
