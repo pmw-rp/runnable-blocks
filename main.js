@@ -95,6 +95,9 @@ function normalize(text) {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Seconds a `requires: - command:` check may take, unless it sets its own timeout.
 const PREREQ_TIMEOUT = 10;
+// A failed command check is run again when its block next renders, once it's this old (ms), since
+// what it checks for (a running cluster, say) may well be there by then.
+const RECHECK_FAILED_MS = 5000;
 
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1372,18 +1375,20 @@ class RunnableBlocksPlugin extends Plugin {
     return `${sourcePath}::${req.lang}::${req.run}`;
   }
 
-  // Runs a block's command prerequisites that haven't been checked yet, or all of them with `force`
-  // (one already running isn't started again). Resolves once they've all finished.
+  // Runs a block's command prerequisites that haven't been checked yet, or failed a while ago (see
+  // RECHECK_FAILED_MS), or all of them with `force`. One already running isn't started again.
+  // Resolves once they've all finished.
   checkPrerequisites(sourcePath, meta, { force = false } = {}) {
     const file = this.getFile(sourcePath);
     return Promise.all((meta.requires || []).filter((r) => r.type === 'command').map((req) => {
       const key = this.commandKey(sourcePath, req);
       const known = this.commandChecks.get(key);
-      if (known && (!known.done || !force)) return known.promise;
+      const stale = known && known.done && !known.ok && Date.now() - known.at >= RECHECK_FAILED_MS;
+      if (known && (!known.done || (!force && !stale))) return known.promise;
       const check = { done: false, output: '' };
       const handle = this.spawnScript(req.lang, req.run, file, req.timeout, (stream, text) => { check.output += text; });
       check.promise = handle.promise.then((outcome) => {
-        Object.assign(check, outcome, { done: true, ok: outcome.exitCode === 0 && !outcome.error });
+        Object.assign(check, outcome, { done: true, ok: outcome.exitCode === 0 && !outcome.error, at: Date.now() });
         this.notifyDependents();
         return check;
       });
@@ -1391,6 +1396,12 @@ class RunnableBlocksPlugin extends Plugin {
       this.notifyDependents();
       return check.promise;
     }));
+  }
+
+  // Lets every failed command check run again as soon as its block renders. Called when a block
+  // finishes running or reverting: that's usually what fixes them, for example starting the cluster.
+  expireFailedChecks() {
+    for (const check of this.commandChecks.values()) if (check.done && !check.ok) check.at = 0;
   }
 
   // The processor only gets the block body; the fence line (language, id=, md5=…) has to be read from the note.
@@ -1740,6 +1751,10 @@ class RunnableBlocksPlugin extends Plugin {
     // it starts or finishes, not with each chunk of output.
     const res = this.results.get(key);
     if (res && !res.done && res.chunks && res.chunks.length) return;
+    if (res && res.done && !res.expiredChecks) {
+      res.expiredChecks = true;
+      this.expireFailedChecks();
+    }
     this.notifyDependents();
   }
 
@@ -2121,6 +2136,7 @@ class RunnableBlocksPlugin extends Plugin {
     Object.assign(rev, outcome, { done: true, durationMs: Date.now() - rev.startedAt });
     rev.ok = !rev.error && rev.exitCode === 0;
     if (rev.ok) await this.clearBlock(sourcePath, meta);
+    this.expireFailedChecks();
     this.notify(key);
     return rev.ok;
   }

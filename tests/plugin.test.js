@@ -350,6 +350,28 @@ P.commandChecks.set(P.commandKey('demo.md', rq.requires[2]), { done: true, ok: t
 eq('a command that succeeded is met', P.prerequisiteState('demo.md', rq).blocked, false);
 P.drafts.clear();
 P.commandChecks.clear();
+// A failed command check is run again once it's a few seconds old, or after any block finishes.
+const spawned = [];
+const [realSpawn, realGetFile] = [P.spawnScript, P.getFile];
+P.spawnScript = (lang, code) => { spawned.push(code); return { promise: Promise.resolve({ exitCode: 0 }) }; };
+P.getFile = () => null;
+const cmdReq = reqMeta('requires:\n  - command: kind get clusters\n');
+const cmdKey = P.commandKey('demo.md', cmdReq.requires[0]);
+P.commandChecks.set(cmdKey, { done: true, ok: false, exitCode: 1, at: Date.now(), promise: Promise.resolve() });
+P.checkPrerequisites('demo.md', cmdReq);
+eq('a check that has just failed is not run again on render', spawned.length, 0);
+P.commandChecks.get(cmdKey).at = Date.now() - 6000;
+P.checkPrerequisites('demo.md', cmdReq);
+eq('one that failed a while ago is', spawned, ['kind get clusters']);
+P.commandChecks.set(cmdKey, { done: true, ok: false, exitCode: 1, at: Date.now(), promise: Promise.resolve() });
+P.expireFailedChecks();
+P.checkPrerequisites('demo.md', cmdReq);
+eq('and so is one any block finishing has expired', spawned.length, 2);
+P.commandChecks.set(cmdKey, { done: true, ok: true, exitCode: 0, at: 0, promise: Promise.resolve() });
+P.checkPrerequisites('demo.md', cmdReq);
+eq('a check that passed is left alone until the block runs', spawned.length, 2);
+Object.assign(P, { spawnScript: realSpawn, getFile: realGetFile });
+P.commandChecks.clear();
 const [pCmd, pEx] = dm.slice(19, 21);
 eq('demo command prerequisites', pCmd.requires.map((r) => r.run), ['command -v git', 'test -f demo/started.txt']);
 eq('demo exercise is blocked by its placeholder', waitingFor(pEx), ["doesn't match"]);
