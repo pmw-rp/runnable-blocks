@@ -1,0 +1,175 @@
+.run-block {
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--background-modifier-border);
+  /* Same radius as Live Preview's hover outline, so the two line up. */
+  border-radius: var(--radius-s);
+  overflow: hidden;
+  margin: 0.5em 0;
+}
+
+/* Live Preview: the wrapper gains overflow:hidden on hover, which stops our margins collapsing
+   through it, so the hover outline would grow past the block. Let the wrapper own the spacing. */
+.markdown-source-view.mod-cm6 .cm-embed-block > .run-block { margin: 0; }
+
+/* Leave room for Live Preview's "edit block" button in the top-right corner. */
+.markdown-source-view.mod-cm6 .cm-embed-block > .run-block .run-block-bar { padding-inline-end: var(--size-4-9); }
+
+.run-block.is-pass { border-left-color: var(--color-green); }
+.run-block.is-fail { border-left-color: var(--color-red); }
+.run-block.is-error { border-left-color: var(--color-orange); }
+
+.run-block-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+}
+
+.run-block-spacer { flex: 1; }
+
+.run-block-lang {
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+}
+
+.run-block-status {
+  padding: 0 6px;
+  border-radius: var(--radius-s);
+  font-weight: var(--font-semibold);
+}
+.run-block-status:empty { display: none; }
+.run-block-status.is-running { color: var(--text-accent); }
+.run-block-status.is-ok { color: var(--text-muted); }
+.run-block-status.is-pass { color: var(--color-green); background: rgba(var(--color-green-rgb), 0.12); }
+.run-block-status.is-fail { color: var(--color-red); background: rgba(var(--color-red-rgb), 0.12); }
+.run-block-status.is-error { color: var(--color-orange); background: rgba(var(--color-orange-rgb), 0.12); }
+
+.run-block-btn.run-block-hidden { display: none; }
+
+.run-block-code pre,
+.run-block-code .markdown-rendered pre {
+  margin: 0;
+  border-radius: 0;
+}
+
+.run-block-output {
+  border-top: 1px dashed var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.run-block-stream {
+  margin: 0;
+  padding: 8px 12px;
+  max-height: 400px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-monospace);
+  font-size: var(--code-size);
+  background: transparent;
+}
+
+.run-stderr { color: var(--color-red); }
+.run-block-muted { color: var(--text-faint); font-style: italic; }
+
+.run-block-error {
+  padding: 0 12px 6px;
+  color: var(--color-orange);
+  font-size: var(--font-ui-smaller);
+}
+
+.run-block-footer {
+  display: flex;
+  gap: 12px;
+  padding: 2px 12px 6px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+.run-block-footer .is-pass { color: var(--color-green); }
+.run-block-footer .is-fail { color: var(--color-red); }
+
+.run-block-settings-textarea {
+  width: 100%;
+  min-width: 260px;
+  font-family: var(--font-monospace);
+}
+
+/* Editable blocks: a transparent textarea over a highlighted copy of its text. Both layers need
+   identical font, spacing, wrapping and padding, or the caret drifts away from the text you see. */
+.run-block-editor-wrap {
+  position: relative;
+  background: var(--code-background);
+}
+.run-block-editor-wrap:focus-within {
+  box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+.run-block-editor-wrap .run-block-highlight,
+.run-block-editor-wrap .run-block-editor {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 0;
+  font-family: var(--font-monospace);
+  font-size: var(--code-size);
+  font-weight: normal;
+  line-height: var(--line-height-normal);
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.run-block-editor-wrap .run-block-highlight {
+  min-height: 3em;
+  overflow: hidden;
+  background: transparent;
+  color: var(--code-normal);
+  pointer-events: none;
+}
+.run-block-editor-wrap .run-block-highlight code {
+  font: inherit;
+  padding: 0;
+  background: none;
+  white-space: inherit;
+  overflow-wrap: inherit;
+}
+.run-block-editor-wrap .run-block-editor {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  overflow: hidden;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--text-normal);
+}
+.run-block-editor-wrap .run-block-editor::selection {
+  background: var(--text-selection);
+}
+
+.run-block-edited {
+  color: var(--text-accent);
+  font-style: italic;
+}
+.run-block-edited.run-block-hidden { display: none; }
+
+.run-block-path { color: var(--text-normal); }
+
+.run-block-validated {
+  display: inline-flex;
+  color: var(--text-faint);
+}
+.run-block-validated svg { width: var(--icon-xs); height: var(--icon-xs); }
+
+.run-block-warning {
+  padding: 2px 12px;
+  color: var(--color-orange);
+  font-size: var(--font-ui-smaller);
+  background: rgba(var(--color-orange-rgb), 0.08);
+}

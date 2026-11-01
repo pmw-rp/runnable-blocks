@@ -1,0 +1,9 @@
+{
+  "id": "runnable-blocks",
+  "name": "Runnable Blocks",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Notebook-style runnable code blocks with a play button, inline output, and MD5 checks of commands and output.",
+  "author": "pmw",
+  "isDesktopOnly": true
+}

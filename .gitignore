@@ -1,0 +1,4 @@
+.DS_Store
+
+# Obsidian saves the plugin's settings here, because the vault's plugin folder links to this one
+data.json
