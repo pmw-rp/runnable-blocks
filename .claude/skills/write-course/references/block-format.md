@@ -109,7 +109,9 @@ revert: |
 - Blocks run in the note's folder, so `lab/` is per course.
 - stderr shows in red. Say so where a tool writes progress there (kind, helm).
 - Run all doesn't pause between blocks. Wait for nodes, rollouts, replication and port forwards explicitly.
-- Background processes need `nohup`, a PID file, and a revert that kills them.
+- Background processes need `nohup`, a PID file, and a revert that kills them. If the PID is a script's (`nohup bash lab/consumer.sh &`), the commands it started are its children and keep running when it's killed: stop them too, with `pkill -P "$pid"; kill "$pid"`.
+- `rpk topic consume -g` doesn't commit a partition whose newest record was written before the partition's leader last changed, so the group's lag on it never reaches 0. Leaders move soon after a cluster starts (the leader balancer). Before checking that a group drains to zero, produce a fresh record to every partition, for example 30 records with distinct keys.
+- `rpk topic consume -g` can't use `-o :end`; to read a group's backlog and exit, use `-n` with the lag.
 - Certificates need every name clients will use (service names, `localhost`), or an upgrade later fails TLS.
 - `rpk cluster health` exits non-zero (10) while the cluster is unhealthy, not only when it's unreachable. Use `rpk cluster info` to test it's reachable, in prerequisites and in revert guards alike: a guard that tests health skips the undo whenever the cluster is briefly unhealthy. To wait for health, require several healthy readings in a row: just after a restart it flips back and forth.
 - A long-running process the learner would leave in a second terminal, such as a consumer, becomes a background block (`nohup`, a PID file, and a revert that kills it) with exercises around it.
