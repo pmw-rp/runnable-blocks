@@ -91,7 +91,13 @@ Files can't be written into the vault's `.obsidian` folder. Writing outside the 
 
 ### Results
 
-**Statuses:** `Pass` (every check matched), `Fail` (a check didn't match), `Exit N` / `Error` / `Timed out` / `Stopped`, and `Done` / `Written` (it worked but has no checks). Every check is listed with ✓ or ✗ under the block, and a shield icon marks blocks that have checks.
+**Statuses:** once a block has run, its border shows how it went:
+
+- **Green:** `Pass`, when every check matched, or `Done` / `Written`, when it ran fine and has no checks.
+- **Red:** `Fail`, when a check didn't match.
+- **Orange:** `Exit N`, `Error`, `Timed out` or `Stopped`, when it didn't run cleanly.
+
+A block that hasn't run yet has no colour. Every check is listed with ✓ or ✗ under the block, and a shield icon marks blocks that have checks.
 
 **Hashes:** before hashing or comparing, text is normalized: `\r\n` becomes `\n`, and trailing whitespace and newlines are trimmed. So `echo hello` matches `expect.output: hello`, and its MD5 is that of `hello`:
 

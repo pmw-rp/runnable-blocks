@@ -14,6 +14,8 @@
 /* Leave room for Live Preview's "edit block" button in the top-right corner. */
 .markdown-source-view.mod-cm6 .cm-embed-block > .run-block .run-block-bar { padding-inline-end: var(--size-4-9); }
 
+/* Ran fine (ok) and passed its checks (pass) are both successes */
+.run-block.is-ok,
 .run-block.is-pass { border-left-color: var(--color-green); }
 .run-block.is-fail { border-left-color: var(--color-red); }
 .run-block.is-error { border-left-color: var(--color-orange); }
@@ -41,7 +43,7 @@
 }
 .run-block-status:empty { display: none; }
 .run-block-status.is-running { color: var(--text-accent); }
-.run-block-status.is-ok { color: var(--text-muted); }
+.run-block-status.is-ok,
 .run-block-status.is-pass { color: var(--color-green); background: rgba(var(--color-green-rgb), 0.12); }
 .run-block-status.is-fail { color: var(--color-red); background: rgba(var(--color-red-rgb), 0.12); }
 .run-block-status.is-error { color: var(--color-orange); background: rgba(var(--color-orange-rgb), 0.12); }
