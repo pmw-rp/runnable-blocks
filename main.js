@@ -2371,3 +2371,6 @@ class RunnableBlocksSettingTab extends PluginSettingTab {
 }
 
 module.exports = RunnableBlocksPlugin;
+// For scripts that check and run notes outside Obsidian, such as the write-course skill's. Obsidian
+// only uses the class itself.
+Object.assign(module.exports, { evaluate, normalize, md5, blockLabel });

@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Helpers for checking and testing Runnable Blocks courses",
+  "dependencies": { "js-yaml": "4.1.0" }
+}
