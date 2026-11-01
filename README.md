@@ -30,7 +30,7 @@ The header can also open with its own `---`, like note frontmatter. Only the fir
 | `timeout` | Seconds before the block is killed. Overrides the global timeout. |
 | `manual` | `true` leaves the block out of **Run all**, e.g. a teardown step. Works on file blocks too. |
 | `idempotent` | `false` for a block that would fail, or do harm, if run a second time. It then runs once, until it's reset (see [Idempotency](#idempotency)). Defaults to `true`. |
-| `depends-on` | The id of a block above, or a list of ids, that must have run successfully first (see [Prerequisites](#prerequisites)). |
+| `depends-on` | The id of a block above, or in another note, or a list of ids, that must have run successfully first (see [Prerequisites](#prerequisites)). |
 | `requires` | What has to be true before the block can run: blocks that have run, commands that succeed, patterns the code matches (see [Prerequisites](#prerequisites)). |
 | `revert` | A command that undoes what the block did: a string, or `lang` and `run`. **Reset** runs it (see [Reset and revert](#reset-and-revert)). |
 | `expect.output` | Exact expected stdout. |
@@ -158,7 +158,7 @@ A block can have prerequisites: things that have to be true before it can run. T
 
 | Kind | Met when | Typical use |
 |---|---|---|
-| `block` | That block, above in the same note, has run successfully. | Deploy before you configure. |
+| `block` | That block, above in the same note or in another note, has run successfully. | Deploy before you configure; a lab page that needs the setup page. |
 | `command` | The command exits 0. | A tool is installed, a file exists, a cluster is up. |
 | `matches` | The block's own code matches the regular expression. | An exercise where the learner writes the command. |
 
@@ -201,9 +201,14 @@ If a prerequisite stops being met after the block ran, the block keeps its own r
 
 **When commands are checked:** when the note opens, and again each time the block runs, including in Run all, since what was installed or running earlier may not be now. Blocks with the same command share one check. If a command fails, fix the problem and press **Check again** on the Before this can run line. With **Check when a note opens** turned off in settings, commands only run when you press ▶, so nothing runs just because a note was opened.
 
+**Blocks in other notes:** a block can depend on a block in any note in the vault, such as a lab page on its setup page's last check. Ids are UUIDs, so `depends-on` needs no note name: the id is looked up in the block's own note first, then in the rest of the vault. The plugin reads every note's blocks when Obsidian starts and keeps up as notes change, so this works whether or not the other note is open.
+- The Before this can run line links to the other note, so the learner can go and run the step.
+- Undo order spans notes too: a block can't be reset while a block in another note that depends on it still has a result, and the Reset tooltip says which note it's in. To tear down a setup page, reset the pages that depend on it first.
+- A copied note keeps its blocks' ids, so two notes can have blocks with the same id. A dependency then finds the one in its own note first, and otherwise either of them, so give copies new ids.
+
 **Getting an id:** switch to source mode and copy the block's `id:` line. A block gets its id the first time it runs, so run it once first if it hasn't got one.
 
-**Problems that show:** a block id that isn't a UUID, an entry with none or more than one of `block`, `command` and `matches`, an unknown key in an entry, and a pattern that isn't a valid regular expression each get a warning; a bad pattern is ignored. An id that isn't in the note, or a block below the dependent one, shows in the Before this can run line.
+**Problems that show:** a block id that isn't a UUID, an entry with none or more than one of `block`, `command` and `matches`, an unknown key in an entry, and a pattern that isn't a valid regular expression each get a warning; a bad pattern is ignored. An id that isn't in the vault, or a block below the dependent one in the same note, shows in the Before this can run line.
 
 ### Saved results
 
@@ -291,6 +296,16 @@ The **Restore the original code** button (↺), on editable blocks, is separate:
 2. In source mode, copy the output MD5 from its `result:` into `expect.md5`, or `check.expect.md5` for a check. Copy the command MD5 into `expect.command-md5` too, if the exact command matters.
 3. Replace the solution with a placeholder and set `editable: true`. The learner types an answer into the block, runs it, and sees Pass or Fail.
 
+## Code files
+
+Code and config files open in Obsidian, in an editor with syntax highlighting, rather than in another app: the files your `file` blocks write, the lab scripts beside your notes, and so on. Click one in the file explorer to open it in a tab. Edits are saved shortly after you stop typing, and when you close the tab. A file that changes on disk, for example because a block rewrote it, updates in the editor, keeping your cursor where it was.
+
+It's deliberately basic: highlighting, Tab inserting two spaces, and the usual undo. There's no find and replace, line numbers or autocomplete. Files over 200,000 characters are shown without highlighting, to keep typing fast. Windows line endings are kept.
+
+Which files open this way is set in **Open these files in the code editor**. The default is `yaml`, `yml`, `json`, `avsc`, `sh`, `bash`, `zsh`, `py`, `go`, `js`, `ts`, `toml`, `ini`, `cfg`, `conf`, `properties`, `xml`, `sql`, `rb`, `txt` and `log`. Markdown is never taken over, and nor is an extension that Obsidian or another plugin already opens; the setting lists any it left alone.
+
+Obsidian's file explorer hides files it can't open. To see these, turn on **Settings → Files and links → Detect all file extensions**. Files whose names start with a dot, such as `.env`, are hidden regardless.
+
 ## Commands
 
 - **Run all blocks in current note**: runs every block in order, skipping `manual: true` blocks. Like a notebook, it stops at the first block that fails or errors, since later blocks usually depend on it.
@@ -307,6 +322,7 @@ The **Restore the original code** button (↺), on editable blocks, is separate:
 - **Timeout**: 30 s by default.
 - **Check when a note opens**: on by default. Runs editable file blocks' check commands, and command prerequisites, without a click.
 - **Allow file blocks to write outside the vault**: off by default.
+- **Open these files in the code editor**: the file extensions that open in the plugin's editor (see [Code files](#code-files)). Reload the plugin after changing it.
 
 Scripts also get the `OBSIDIAN_VAULT` and `OBSIDIAN_NOTE` environment variables (absolute paths).
 

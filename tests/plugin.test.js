@@ -120,10 +120,10 @@ const fakeFs = {
   watch: () => ({ close() {} }),
 };
 class FileSystemAdapter { getBasePath() { return '/vault'; } }
-const req = (m) => (m === 'obsidian' ? { Plugin: Stub, PluginSettingTab: Stub, MarkdownRenderChild: Stub, TFile, MarkdownView, FileSystemAdapter, parseYaml, stringifyYaml, Notice: class { setMessage() {} hide() {} } }
+const req = (m) => (m === 'obsidian' ? { Plugin: Stub, PluginSettingTab: Stub, MarkdownRenderChild: Stub, TextFileView: Stub, TFile, MarkdownView, FileSystemAdapter, parseYaml, stringifyYaml, Notice: class { setMessage() {} hide() {} } }
   : m === 'crypto' ? fakeCrypto : m === 'path' ? fakePath : m === 'fs' ? fakeFs : {});
 const api = new Function('require', 'module', 'setTimeout', 'clearTimeout', 'window', src + `
-return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withContent, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
+return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withContent, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
 
 const out = [];
 const eq = (name, a, b) => {
@@ -179,6 +179,11 @@ eq('sibling deeper lines not matched', api.setHeaderValue('check:\n  run: |\n   
 eq('withContent keeps header', api.withContent('id: a\nlang: bash\n---\nold', 'new\ncode'), 'id: a\nlang: bash\n---\nnew\ncode');
 eq('withContent without header', api.withContent('old', 'new'), 'new');
 eq('replaceBody restores callout prefix', api.replaceBody('> ```run\n> old\n> ```', { lineStart: 0, lineEnd: 2, prefix: '> ' }, 'id: a\n\n---\nx'), '> ```run\n> id: a\n>\n> ---\n> x\n> ```');
+
+// The code file view's extensions
+eq('code extensions from the setting', api.codeExtensions(' .YAML, yml,sh\npy, , yml'), ['yaml', 'yml', 'sh', 'py']);
+eq('Markdown is never taken over', api.codeExtensions('md, yaml'), ['yaml']);
+eq('every default extension has a language', api.codeExtensions(api.DEFAULT_SETTINGS.codeExtensions).filter((e) => !api.CODE_LANGS[e]), []);
 
 // Plugin: metas from the demo note
 const P = new api.Plugin();
@@ -295,7 +300,27 @@ eq('a dependency that failed its checks blocks', P.prerequisiteState('checked.md
 P.results.set(P.keyFor('checked.md', checked[0]), { done: true, exitCode: 0, stdout: 'yes' });
 eq('a dependency that passed its checks unblocks', P.prerequisiteState('checked.md', checked[1]).blocked, false);
 const lost = P.makeMeta('run', 'id: cccccccc-cccc-4ccc-8ccc-cccccccccccc\ndepends-on: 99999999-9999-4999-8999-999999999999\n---\nls');
-eq('an unknown id blocks', P.prerequisiteState('demo.md', lost).waiting.map((w) => w.reason), ['not found in this note']);
+eq('an unknown id blocks', P.prerequisiteState('demo.md', lost).waiting.map((w) => w.reason), ['not found in the vault']);
+
+// Dependencies on blocks in other notes
+const setupNote = '```run\nid: 5e7a0000-0000-4000-8000-000000000001\nlang: bash\n---\nkind create cluster\n```\n';
+const labNote = '```run\nid: 1ab00000-0000-4000-8000-000000000002\nlang: bash\ndepends-on: 5e7a0000-0000-4000-8000-000000000001\n---\nkubectl get pods\n```\n';
+const [setupBlock] = P.metasFor(setupNote, 'course/1 Setup.md').map(({ meta }) => meta);
+const [labBlock] = P.metasFor(labNote, 'course/2 Lab.md').map(({ meta }) => meta);
+const crossWait = () => P.prerequisiteState('course/2 Lab.md', labBlock).waiting;
+eq('a block in another note is found', [crossWait()[0].reason, crossWait()[0].note, crossWait()[0].line], ['not run yet', 'course/1 Setup.md', 1]);
+eq('it is never "below" this block', crossWait()[0].below, false);
+eq('the summary names the other note', crossWait()[0].summary, 'run line 1 (bash: kind create cluster) in 1 Setup first');
+P.results.set(P.keyFor('course/1 Setup.md', setupBlock), { done: true, exitCode: 0, stdout: '' });
+eq('its result in the other note unblocks', P.prerequisiteState('course/2 Lab.md', labBlock).blocked, false);
+P.results.set(P.keyFor('course/2 Lab.md', labBlock), { done: true, exitCode: 0, stdout: '' });
+eq('the dependent in the other note holds up a reset', P.resetBlocker('course/1 Setup.md', setupBlock), 'reset bash: kubectl get pods in 2 Lab first, which depend on it');
+P.results.delete(P.keyFor('course/2 Lab.md', labBlock));
+eq('until it is reset', P.resetBlocker('course/1 Setup.md', setupBlock), null);
+const localFirst = P.metasFor(setupNote.replace('kind create cluster', 'echo copy') + labNote, 'course/3 Copy.md').map(({ meta }) => meta);
+eq('a block in the same note wins over one elsewhere with the same id', P.prerequisiteState('course/3 Copy.md', localFirst[1]).waiting[0].note, null);
+P.results.delete(P.keyFor('course/1 Setup.md', setupBlock));
+['course/1 Setup.md', 'course/2 Lab.md', 'course/3 Copy.md'].forEach((n) => P.noteIndex.delete(n));
 eq('a non-UUID dependency warns', P.makeMeta('run', 'lang: bash\ndepends-on: first-block\n---\nls').warnings.length, 1);
 const above = Object.assign(P.makeMeta('run', 'id: dddddddd-dddd-4ddd-8ddd-dddddddddddd\ndepends-on: ' + dD.id + '\n---\nls'), { lineStart: 0 });
 P.results.delete(P.keyFor('demo.md', dD));

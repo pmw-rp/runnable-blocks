@@ -227,3 +227,22 @@
 }
 .run-block-revert.is-error .run-block-revert-title { color: var(--color-orange); }
 .run-block-revert .run-block-stream { padding: 4px 0; max-height: 200px; }
+
+/* The code file view: the editor fills the pane, which scrolls. */
+.workspace-leaf-content[data-type="runnable-blocks-code"] .view-content {
+  padding: 0;
+}
+.run-block-editor-wrap.run-code-file {
+  min-height: 100%;
+  background: transparent;
+}
+.run-block-editor-wrap.run-code-file:focus-within {
+  box-shadow: none;
+}
+.run-code-file .run-block-highlight,
+.run-code-file .run-block-editor {
+  padding: var(--file-margins, 32px);
+}
+.run-code-file .run-block-highlight {
+  min-height: 100%;
+}

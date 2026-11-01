@@ -9,6 +9,7 @@ const {
   FileSystemAdapter,
   TFile,
   MarkdownView,
+  TextFileView,
   setIcon,
   loadPrism,
   sanitizeHTMLToDom,
@@ -42,6 +43,8 @@ const DEFAULT_SETTINGS = {
   defaultLang: 'bash',
   allowOutsideVault: false,
   checkOnOpen: true,
+  // Files with these extensions open in the plugin's code editor, rather than outside Obsidian.
+  codeExtensions: 'yaml, yml, json, avsc, sh, bash, zsh, py, go, js, ts, toml, ini, cfg, conf, properties, xml, sql, rb, txt, log',
 };
 
 const EXTENSIONS = {
@@ -58,6 +61,16 @@ const PRISM_LANGS = { sh: 'bash', zsh: 'bash', py: 'python', js: 'javascript', n
 const LANG_FOR_EXT = { yml: 'yaml', md: 'markdown', sh: 'bash', py: 'python', rb: 'ruby', txt: 'text' };
 
 const BLOCK_RE = /^(run|file)(\s|$)/;
+
+// The code editor's view, and the Prism language for each file extension it opens.
+const CODE_VIEW = 'runnable-blocks-code';
+const CODE_LANGS = {
+  yaml: 'yaml', yml: 'yaml', json: 'json', avsc: 'json', sh: 'bash', bash: 'bash', zsh: 'bash', py: 'python',
+  go: 'go', js: 'javascript', ts: 'typescript', toml: 'toml', ini: 'ini', cfg: 'ini', conf: 'ini',
+  properties: 'properties', xml: 'markup', sql: 'sql', rb: 'ruby', txt: 'none', log: 'none',
+};
+// Highlighting re-runs on every keystroke, so very large files are shown plain.
+const MAX_HIGHLIGHT = 200000;
 
 // Settings a block's YAML header may use. A header only counts as one if it uses at least one of
 // these, so a file whose own content has a "---" line isn't mistaken for a header.
@@ -257,6 +270,122 @@ function replaceBody(text, block, body) {
 }
 
 // A short description of a block, for messages about it: its file, or its first line of code.
+// A text editor with syntax highlighting: a <textarea> laid over a copy of its text, highlighted with
+// Obsidian's Prism. The textarea's own text is transparent, so you see the highlighted copy, with the
+// textarea's caret and selection on top. The copy sets the height, so the textarea always fits.
+// Used by editable blocks and by the code file view. `isolate` stops clicks and keys reaching the
+// note around it; `onRun` is called on Shift/Cmd/Ctrl+Enter. Returns { wrap, textarea, paint }.
+function codeEditor(plugin, parent, { lang, value, onInput, isolate = false, onRun = null, cls = '' }) {
+  const wrap = parent.createDiv({ cls: `run-block-editor-wrap ${cls}`.trim() });
+  const pre = wrap.createEl('pre', { cls: `run-block-highlight language-${lang}`, attr: { 'aria-hidden': 'true' } });
+  const code = pre.createEl('code', { cls: `language-${lang}` });
+  const ta = wrap.createEl('textarea', { cls: 'run-block-editor', attr: { spellcheck: 'false' } });
+  ta.value = value;
+
+  const paint = () => {
+    const text = ta.value;
+    if (text.length > MAX_HIGHLIGHT) code.setText(text);
+    else plugin.highlight(code, text, lang);
+    // A trailing newline needs something after it, or the copy comes out a line short.
+    if (text === '' || text.endsWith('\n')) code.appendText(' ');
+  };
+  paint();
+  if (!plugin.prism) plugin.prismReady.then(paint);
+
+  if (isolate) {
+    for (const type of ['mousedown', 'click', 'keydown', 'keyup', 'keypress', 'beforeinput', 'paste', 'cut', 'copy']) {
+      ta.addEventListener(type, (evt) => evt.stopPropagation());
+    }
+  }
+  ta.addEventListener('input', () => {
+    paint();
+    onInput(ta.value);
+  });
+  ta.addEventListener('keydown', (evt) => {
+    if (onRun && evt.key === 'Enter' && (evt.shiftKey || evt.metaKey || evt.ctrlKey)) {
+      evt.preventDefault();
+      onRun();
+    } else if (evt.key === 'Tab' && !evt.shiftKey) {
+      evt.preventDefault();
+      // execCommand keeps the insertion on the undo stack, unlike setRangeText, and fires input.
+      if (!document.execCommand('insertText', false, '  ')) {
+        ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
+        ta.dispatchEvent(new Event('input'));
+      }
+    }
+  });
+  return { wrap, textarea: ta, paint };
+}
+
+// Opens code and config files (YAML, shell scripts, Python, …) in Obsidian, in a highlighted editor.
+// Obsidian loads the file and saves it shortly after each edit. Line endings are kept as they were.
+class CodeFileView extends TextFileView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this.editor = null;
+    this.crlf = false;
+  }
+
+  getViewType() {
+    return CODE_VIEW;
+  }
+
+  getIcon() {
+    return 'file-code';
+  }
+
+  getViewData() {
+    const text = this.editor ? this.editor.textarea.value : this.data;
+    return this.crlf ? text.replace(/\n/g, '\r\n') : text;
+  }
+
+  // `clear` means a different file: start a fresh editor. Otherwise the file changed on disk, so
+  // update the text and keep the cursor where it was.
+  setViewData(data, clear) {
+    this.crlf = data.includes('\r\n');
+    const text = this.crlf ? data.replace(/\r\n/g, '\n') : data;
+    this.data = text;
+    if (clear || !this.editor) {
+      this.contentEl.empty();
+      const ext = this.file ? this.file.extension.toLowerCase() : '';
+      this.editor = codeEditor(this.plugin, this.contentEl, {
+        lang: CODE_LANGS[ext] || ext || 'none',
+        value: text,
+        cls: 'run-code-file',
+        onInput: (value) => {
+          this.data = value;
+          this.requestSave();
+        },
+      });
+      return;
+    }
+    const ta = this.editor.textarea;
+    if (ta.value === text) return;
+    const { selectionStart, selectionEnd } = ta;
+    ta.value = text;
+    ta.setSelectionRange(Math.min(selectionStart, text.length), Math.min(selectionEnd, text.length));
+    this.editor.paint();
+  }
+
+  clear() {
+    this.data = '';
+    this.editor = null;
+    this.contentEl.empty();
+  }
+}
+
+// The extensions in the code editor setting, without dots, duplicates, or Markdown.
+function codeExtensions(setting) {
+  const exts = String(setting || '').split(/[\s,]+/).map((e) => e.replace(/^\./, '').toLowerCase()).filter(Boolean);
+  return [...new Set(exts)].filter((e) => e !== 'md');
+}
+
+// A note's name, as Obsidian shows it: its file name without the folder or .md.
+function noteName(path) {
+  return path.replace(/^.*\//, '').replace(/\.md$/, '');
+}
+
 function firstLine(code) {
   const first = (code.split('\n').find((line) => line.trim()) || '').trim();
   return first.length > 40 ? `${first.slice(0, 39)}…` : first;
@@ -523,9 +652,6 @@ class RunBlock extends MarkdownRenderChild {
     return btn;
   }
 
-  // An editable block is a <textarea> laid over a copy of its text, highlighted with Obsidian's
-  // Prism. The textarea's own text is transparent, so you see the highlighted copy, with the
-  // textarea's caret and selection on top. The copy sets the height, so the textarea always fits.
   // Read-only code, highlighted synchronously so a re-rendered block never shows without it.
   renderCode(parent) {
     const lang = PRISM_LANGS[this.meta.lang] || this.meta.lang;
@@ -544,13 +670,20 @@ class RunBlock extends MarkdownRenderChild {
   }
 
   renderEditor(parent) {
-    const wrap = parent.createDiv({ cls: 'run-block-editor-wrap' });
-    const lang = PRISM_LANGS[this.meta.lang] || this.meta.lang;
-    const pre = wrap.createEl('pre', { cls: `run-block-highlight language-${lang}`, attr: { 'aria-hidden': 'true' } });
-    const code = pre.createEl('code', { cls: `language-${lang}` });
-    const ta = wrap.createEl('textarea', { cls: 'run-block-editor', attr: { spellcheck: 'false' } });
-    ta.value = this.plugin.currentCode(this.key, this.meta);
+    const editor = codeEditor(this.plugin, parent, {
+      lang: PRISM_LANGS[this.meta.lang] || this.meta.lang,
+      value: this.plugin.currentCode(this.key, this.meta),
+      // Keep Live Preview from treating clicks and keys in the editor as edits to the note itself.
+      isolate: true,
+      onInput: (value) => {
+        if (this.synced) this.plugin.editFile(this.ctx.sourcePath, this.meta, value);
+        else this.plugin.setDraft(this.key, this.meta, value);
+      },
+      onRun: () => this.execute(),
+    });
+    const ta = editor.textarea;
     this.editor = ta;
+    this.fitEditor = editor.paint;
     // Saving a result re-renders the block; if you were typing in it, carry on where you were.
     const refocus = this.plugin.refocus;
     if (refocus && refocus.key === this.key) {
@@ -560,41 +693,8 @@ class RunBlock extends MarkdownRenderChild {
         ta.setSelectionRange(refocus.start, refocus.end);
       });
     }
-
-    const paint = () => {
-      const text = ta.value;
-      this.plugin.highlight(code, text, lang);
-      // A trailing newline needs something after it, or the copy comes out a line short.
-      if (text === '' || text.endsWith('\n')) code.appendText(' ');
-    };
-    this.fitEditor = paint;
-    paint();
-    if (!this.plugin.prism) this.plugin.prismReady.then(() => { if (!this.unloaded) paint(); });
-
-    // Keep Live Preview from treating clicks and keys in the editor as edits to the note itself.
-    for (const type of ['mousedown', 'click', 'keydown', 'keyup', 'keypress', 'beforeinput', 'paste', 'cut', 'copy']) {
-      ta.addEventListener(type, (evt) => evt.stopPropagation());
-    }
-    ta.addEventListener('input', () => {
-      paint();
-      if (this.synced) this.plugin.editFile(this.ctx.sourcePath, this.meta, ta.value);
-      else this.plugin.setDraft(this.key, this.meta, ta.value);
-    });
     // Saving into the note re-renders the block, so synced blocks only do it once the learner moves on.
     if (this.synced) ta.addEventListener('blur', () => this.plugin.persistLearner(this.ctx.sourcePath, this.meta));
-    ta.addEventListener('keydown', (evt) => {
-      if (evt.key === 'Enter' && (evt.shiftKey || evt.metaKey || evt.ctrlKey)) {
-        evt.preventDefault();
-        this.execute();
-      } else if (evt.key === 'Tab' && !evt.shiftKey) {
-        evt.preventDefault();
-        // execCommand keeps the insertion on the undo stack, unlike setRangeText, and fires input.
-        if (!document.execCommand('insertText', false, '  ')) {
-          ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
-          ta.dispatchEvent(new Event('input'));
-        }
-      }
-    });
   }
 
   scheduleRender() {
@@ -807,6 +907,14 @@ class RunBlock extends MarkdownRenderChild {
       } else {
         this.waitEl.createSpan({ text: w.message ? `${w.message}: run ` : 'run ' });
         this.waitEl.createEl('code', { text: w.label });
+        if (w.note) {
+          this.waitEl.createSpan({ text: ' in ' });
+          const link = this.waitEl.createEl('a', { cls: 'internal-link', text: noteName(w.note), href: w.note });
+          link.addEventListener('click', (evt) => {
+            evt.preventDefault();
+            this.plugin.app.workspace.openLinkText(w.note, this.ctx.sourcePath, evt.metaKey || evt.ctrlKey);
+          });
+        }
         const where = w.line ? `line ${w.line}${w.below ? ', which is below this block' : ''}, ` : '';
         reason(`${where}${w.reason}`);
       }
@@ -880,7 +988,7 @@ class RunnableBlocksPlugin extends Plugin {
     this.widgets = new Map(); // key -> Set<RunBlock>
     this.written = new Map(); // key -> md5 of what a file block last wrote to disk
     this.writeTimers = new Map(); // key -> pending write of a synced file block after typing
-    this.noteIndex = new Map(); // note path -> metas of its blocks, for resolving depends-on
+    this.noteIndex = new Map(); // note path -> metas of its blocks, for resolving depends-on across the vault
     this.heights = new Map(); // key -> last rendered height, so a re-render can start at it
     this.outputScroll = new Map(); // key -> { top, atBottom } of the block's output box
     this.reverts = new Map(); // key -> the block's last revert: its output and how it went
@@ -930,10 +1038,63 @@ class RunnableBlocksPlugin extends Plugin {
 
     this.addSettingTab(new RunnableBlocksSettingTab(this.app, this));
 
+    // Code and config files open in the plugin's editor. An extension another plugin, or Obsidian
+    // itself, already handles is left to it.
+    this.registerView(CODE_VIEW, (leaf) => new CodeFileView(leaf, this));
+    this.codeExtensionsSkipped = [];
+    for (const ext of codeExtensions(this.settings.codeExtensions)) {
+      try {
+        this.registerExtensions([ext], CODE_VIEW);
+      } catch (e) {
+        this.codeExtensionsSkipped.push(ext);
+      }
+    }
+
     // When the plugin is reloaded, or turned on while Obsidian is running, open notes can still show
     // blocks rendered by the previous version, especially inside callouts, which Obsidian doesn't
     // re-render. Redraw them. At app start there's nothing stale, so this is skipped.
     if (this.app.workspace.layoutReady) this.app.workspace.onLayoutReady(() => this.redrawOpenNotes());
+
+    // A block can depend on blocks in other notes, so every note's blocks are indexed, not just the
+    // open ones', and kept up to date as notes change.
+    this.app.workspace.onLayoutReady(() => this.indexVault());
+    this.registerEvent(this.app.vault.on('modify', (file) => this.indexNote(file)));
+    this.registerEvent(this.app.vault.on('create', (file) => this.indexNote(file)));
+    this.registerEvent(this.app.vault.on('delete', (file) => {
+      if (this.noteIndex.delete(file.path)) this.notifyDependents();
+    }));
+    this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
+      this.noteIndex.delete(oldPath);
+      this.indexNote(file);
+    }));
+  }
+
+  async indexVault() {
+    for (const file of this.app.vault.getMarkdownFiles()) await this.indexNote(file, { quiet: true });
+    this.notifyDependents();
+  }
+
+  // Indexes a note's blocks. Notes without any are skipped, unless they had some before.
+  async indexNote(file, { quiet = false } = {}) {
+    if (!(file instanceof TFile) || file.extension !== 'md') return;
+    const text = await this.app.vault.cachedRead(file);
+    const has = /^\s*(>\s*)*(```|~~~)\s*(run|file)\b/m.test(text);
+    if (!has && !this.noteIndex.has(file.path)) return;
+    if (has) this.metasFor(text, file.path);
+    else this.noteIndex.delete(file.path);
+    if (!quiet) this.notifyDependents();
+  }
+
+  // Finds a block by id: in the given note first, then anywhere in the vault. Returns { path, meta } or null.
+  findBlock(id, sourcePath) {
+    const here = (this.noteIndex.get(sourcePath) || []).find((m) => m.id === id);
+    if (here) return { path: sourcePath, meta: here };
+    for (const [path, metas] of this.noteIndex) {
+      if (path === sourcePath) continue;
+      const meta = metas.find((m) => m.id === id);
+      if (meta) return { path, meta };
+    }
+    return null;
   }
 
   // Re-renders every open note that has runnable blocks, keeping each view's scroll and cursor.
@@ -1157,7 +1318,6 @@ class RunnableBlocksPlugin extends Plugin {
   // checked when the block runs. A pattern is met while the block's current code matches it.
   // Each entry in `waiting` has a `reason`, and a `summary` for notices.
   prerequisiteState(sourcePath, meta) {
-    const blocks = this.noteIndex.get(sourcePath) || [];
     const waiting = [];
     for (const req of meta.requires || []) {
       if (req.type === 'command') {
@@ -1179,13 +1339,16 @@ class RunnableBlocksPlugin extends Plugin {
         continue;
       }
       const id = req.id;
-      const dep = blocks.find((m) => m.id === id);
-      if (!dep) {
+      const found = this.findBlock(id, sourcePath);
+      if (!found) {
         const label = `${id.slice(0, 8)}…`;
-        waiting.push({ type: 'block', id, label, reason: 'not found in this note', message: req.message, summary: req.message || `${label} isn't in this note` });
+        waiting.push({ type: 'block', id, label, reason: 'not found in the vault', message: req.message, summary: req.message || `${label} isn't in the vault` });
         continue;
       }
-      const res = this.resultFor(sourcePath, dep);
+      const dep = found.meta;
+      // A block in another note: `note` is its path, for the link to it.
+      const note = found.path === sourcePath ? null : found.path;
+      const res = this.resultFor(found.path, dep);
       let reason = null;
       if (!res) reason = 'not run yet';
       else if (!res.done) reason = 'running';
@@ -1197,9 +1360,9 @@ class RunnableBlocksPlugin extends Plugin {
       if (reason) {
         const label = blockLabel(dep);
         waiting.push({
-          type: 'block', id, label, line: dep.lineStart + 1, reason, message: req.message,
-          below: meta.lineStart != null && dep.lineStart > meta.lineStart,
-          summary: req.message || `run line ${dep.lineStart + 1} (${label}) first`,
+          type: 'block', id, label, line: dep.lineStart + 1, reason, message: req.message, note,
+          below: !note && meta.lineStart != null && dep.lineStart > meta.lineStart,
+          summary: req.message || `run line ${dep.lineStart + 1} (${label})${note ? ` in ${noteName(note)}` : ''} first`,
         });
       }
     }
@@ -1223,11 +1386,11 @@ class RunnableBlocksPlugin extends Plugin {
       const handle = this.spawnScript(req.lang, req.run, file, req.timeout, (stream, text) => { check.output += text; });
       check.promise = handle.promise.then((outcome) => {
         Object.assign(check, outcome, { done: true, ok: outcome.exitCode === 0 && !outcome.error });
-        this.notifyNote(sourcePath);
+        this.notifyDependents();
         return check;
       });
       this.commandChecks.set(key, check);
-      this.notifyNote(sourcePath);
+      this.notifyDependents();
       return check.promise;
     }));
   }
@@ -1600,14 +1763,15 @@ class RunnableBlocksPlugin extends Plugin {
     // it starts or finishes, not with each chunk of output.
     const res = this.results.get(key);
     if (res && !res.done && res.chunks && res.chunks.length) return;
-    this.notifyNote(key.slice(0, key.indexOf('::')));
+    this.notifyDependents();
   }
 
-  // Re-renders a note's blocks that have prerequisites.
-  notifyNote(sourcePath) {
+  // Re-renders the blocks that have prerequisites, in any note, since they can depend on blocks in
+  // other notes. A block whose state hasn't changed skips the re-render.
+  notifyDependents() {
     for (const widgets of this.widgets.values()) {
       for (const widget of widgets) {
-        if (widget.meta.requires.length && widget.ctx.sourcePath === sourcePath) widget.scheduleRender();
+        if (widget.meta.requires.length) widget.scheduleRender();
       }
     }
   }
@@ -1893,10 +2057,17 @@ class RunnableBlocksPlugin extends Plugin {
   }
 
   // Blocks that depend on this one and still have a result. Like undo, they have to be reverted first.
+  // They can be in any note. Each is described for messages: its label, and its note if it's another.
   activeDependents(sourcePath, meta) {
     if (!meta.id) return [];
-    return (this.noteIndex.get(sourcePath) || [])
-      .filter((m) => m.dependsOn.includes(meta.id) && this.resultFor(sourcePath, m));
+    const out = [];
+    for (const [path, metas] of this.noteIndex) {
+      for (const m of metas) {
+        if (!m.dependsOn.includes(meta.id) || !this.resultFor(path, m)) continue;
+        out.push(path === sourcePath ? blockLabel(m) : `${blockLabel(m)} in ${noteName(path)}`);
+      }
+    }
+    return out;
   }
 
   // Why a block can't run again, or null if it can: a block that isn't idempotent runs once, until
@@ -1916,7 +2087,7 @@ class RunnableBlocksPlugin extends Plugin {
     const res = this.resultFor(sourcePath, meta);
     if (!res || !res.done) return "it hasn't run";
     const dependents = this.activeDependents(sourcePath, meta);
-    if (dependents.length) return `reset ${dependents.map(blockLabel).join(' and ')} first, which depend on it`;
+    if (dependents.length) return `reset ${dependents.join(' and ')} first, which depend on it`;
     return null;
   }
 
@@ -1929,7 +2100,7 @@ class RunnableBlocksPlugin extends Plugin {
     const onDisk = meta.kind === 'file' && ['same', 'differs'].includes(this.diskState(sourcePath, meta).state);
     if (!res && !this.reverts.has(key) && !edited && !onDisk) return 'there\'s nothing to reset';
     const dependents = res ? this.activeDependents(sourcePath, meta) : [];
-    if (dependents.length) return `reset ${dependents.map(blockLabel).join(' and ')} first, which depend on it`;
+    if (dependents.length) return `reset ${dependents.join(' and ')} first, which depend on it`;
     return null;
   }
 
@@ -2185,6 +2356,12 @@ class RunnableBlocksSettingTab extends PluginSettingTab {
       .setName('Check when a note opens')
       .setDesc('Shows pass/fail straight away by running each editable file block\'s check against the file on disk, and runs each block\'s command prerequisites (requires: - command:). This runs the note\'s check commands without a click. When off, they run when you press play.')
       .addToggle((t) => t.setValue(settings.checkOnOpen).onChange((v) => { settings.checkOnOpen = v; save(); }));
+
+    const skipped = this.plugin.codeExtensionsSkipped || [];
+    new Setting(containerEl)
+      .setName('Open these files in the code editor')
+      .setDesc(`File extensions, separated by commas, that open in Obsidian with syntax highlighting rather than in another app. Turn on "Detect all file extensions" (Files and links) to see them in the file explorer. Reload the plugin after changing this.${skipped.length ? ` Already handled elsewhere, so left alone: ${skipped.join(', ')}.` : ''}`)
+      .addTextArea((t) => t.setValue(settings.codeExtensions).onChange((v) => { settings.codeExtensions = v; save(); }));
 
     new Setting(containerEl)
       .setName('Allow file blocks to write outside the vault')
