@@ -583,9 +583,6 @@ class RunBlock extends MarkdownRenderChild {
     bar.createDiv({ cls: 'run-block-spacer' });
     if (this.meta.editable) {
       this.editedEl = bar.createSpan({ cls: 'run-block-edited', text: 'edited' });
-      this.resetBtn = this.button(bar, 'rotate-ccw', 'Restore the original code', () => (this.synced
-        ? this.plugin.resetFile(this.ctx.sourcePath, this.meta)
-        : this.plugin.restoreOriginal(this.ctx.sourcePath, this.meta)));
     }
     // Reset reverts what the block did, if it has a revert command (↶), or just clears it (eraser).
     this.resetBlockBtn = this.button(bar, this.meta.revert ? 'undo-2' : 'eraser', 'Reset',
@@ -761,7 +758,8 @@ class RunBlock extends MarkdownRenderChild {
     if (this.editor) {
       const code = this.plugin.currentCode(this.key, this.meta);
       const edited = code !== this.meta.original;
-      for (const node of [this.editedEl, this.resetBtn]) if (node) node.toggleClass('run-block-hidden', !edited);
+      // Reset is the way back to the original.
+      this.editedEl.toggleClass('run-block-hidden', !edited);
       // Another view of the same note, or the file on disk, may have changed the content.
       if (document.activeElement !== this.editor && normalize(this.editor.value) !== code) {
         this.editor.value = code;
@@ -1619,26 +1617,6 @@ class RunnableBlocksPlugin extends Plugin {
       if (res && res.done && !res.saved) updated = setHeaderEntry(updated, 'result', savedResult(meta, res));
       return updated;
     });
-  }
-
-  // Restore (↺) on an editable run block: back to the original code, in the editor and the note.
-  async restoreOriginal(sourcePath, meta) {
-    const key = this.keyFor(sourcePath, meta);
-    this.drafts.set(key, meta.original);
-    this.notify(key);
-    await this.persistLearner(sourcePath, meta);
-  }
-
-  async resetFile(sourcePath, meta) {
-    const key = this.keyFor(sourcePath, meta);
-    clearTimeout(this.writeTimers.get(key));
-    this.drafts.set(key, meta.original);
-    // The current result describes content that's about to be replaced, so it shouldn't be saved.
-    this.results.delete(key);
-    this.notify(key);
-    const updated = await this.persistLearner(sourcePath, meta);
-    const res = await this.writeFileBlock(sourcePath, updated);
-    await this.persistResult(sourcePath, updated, res);
   }
 
   // Brings a synced file block up to date with its file. A change we didn't write ourselves (a

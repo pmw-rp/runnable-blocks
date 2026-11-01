@@ -442,12 +442,6 @@ gated.then((res) => {
     eq('original kept in note', fm().original, 'replicas: 1');
     P.settleDraft(key, fm());
     eq('draft settled after re-render', P.drafts.has(key), false);
-    return P.resetFile('n.md', fm());
-  }).then(() => new Promise((r) => r())).then(() => {
-    eq('reset rewrites file', files['/vault/demo/a.yaml'], 'replicas: 1\n');
-    eq('reset removes learner from note', fm().learner, null);
-    eq('reset saves the result of writing the original', [fm().saved && fm().saved['content-md5'], fm().code], ['h:replicas: 1', 'replicas: 1']);
-    eq('note body after reset', disk.replace(/result:\n(  .*\n)+/, ''), '```file\nid: ' + U1 + '\npath: demo/a.yaml\neditable: true\n---\nreplicas: 1\n```\n');
 
     // Reset (the toolbar button, and Reset all): the learner's edits go, and the original is checked.
     disk = '```file\nid: ' + U1 + '\npath: demo/a.yaml\neditable: true\nexpect:\n  content: "replicas: 3"\nlearner: "replicas: 3"\n---\nreplicas: 1\n```\n';
@@ -511,13 +505,6 @@ gated.then((res) => {
     eq('and clears the result', P.results.has(P.keyFor('n.md', fm())), false);
     P.settleDraft(P.keyFor('n.md', fm()), fm());
     eq('then there is nothing to reset', P.resetBlocker('n.md', fm()), "there's nothing to reset");
-    P.setDraft(P.keyFor('n.md', fm()), fm(), 'echo again');
-    return P.persistLearner('n.md', fm());
-  }).then(() => {
-    P.settleDraft(P.keyFor('n.md', fm()), fm());
-    return P.restoreOriginal('n.md', fm());
-  }).then(() => {
-    eq('Restore puts the original code back too', [fm().learner, fm().code], [null, '# your command here']);
     eq('a learner entry on a block that is not editable is ignored', P.makeMeta('run', 'lang: bash\nlearner: echo x\n---\necho y').code, 'echo y');
   });
 }).then(() => {

@@ -131,8 +131,8 @@ With `editable: true`, the block shows a text editor instead of highlighted code
 
 - **Shift+Enter** or **Cmd/Ctrl+Enter** runs the block (or writes the file). **Tab** indents.
 - Your version is saved into the block's header, as `learner:`, when you leave the editor and when the block runs. The block's content, below `---`, stays the author's original, so it's never lost. The rendered view hides the header, so you see your version in the editor.
-- Once you edit a block, an *edited* marker appears with **Restore the original code** (↺), which puts the original back, in the editor and the note.
-- **Reset** also puts the original back, as well as clearing the result, and running the block's revert if it has one.
+- Once you edit a block, an *edited* marker appears.
+- **Reset** puts the original back, in the editor and the note, as well as clearing the result and running the block's revert if it has one. Before the block has run, that's all it does, so it's also how a learner starts an answer over.
 - "Run all" uses your version.
 - Editable *file* blocks work the same way, and also keep the file on disk in sync (see above).
 
@@ -284,13 +284,11 @@ revert:
 
 **Without a `revert:` (the button shows the eraser),** Reset clears the block's result, on screen and from the note.
 
-**File blocks** also have their file deleted, after the revert (if any) and clearing the result, so the lab is back to before the block was written. Editable file blocks also lose the learner's edits: the block goes back to the author's original. To be safe, the file is only deleted while it's still the one the block wrote; if something else has changed it since, it's kept and a notice says so. A deleted file stays deleted until the block writes it again: when the learner edits it, when you press write or **Restore the original code**, or when a run block below runs and needs it. Reset is available on a file block whenever its file is on disk or the learner has edited it, even with no result.
+**File blocks** also have their file deleted, after the revert (if any) and clearing the result, so the lab is back to before the block was written. Editable file blocks also lose the learner's edits: the block goes back to the author's original. To be safe, the file is only deleted while it's still the one the block wrote; if something else has changed it since, it's kept and a notice says so. A deleted file stays deleted until the block writes it again: when the learner edits it, when you press write, when a run block below runs and needs it, or when the note is next opened after Obsidian restarts. Reset is available on a file block whenever its file is on disk or the learner has edited it, even with no result.
 
 **Undo order:** Reset is unavailable while a block that depends on this one still has a result. Reset the dependent first, as with undo. It's also unavailable while the block is running, or when there's nothing to reset. The button's tooltip says which.
 
 **Reset all blocks in current note:** in the command palette. It resets the whole note from the bottom up, which reverts blocks in the right order. With `revert:` on its blocks, a setup page can tear its lab down this way.
-
-The **Restore the original code** button (↺), on editable blocks, is separate: it undoes your edits to the code, not what the block did. On a file block it writes the original back and checks it, rather than deleting the file, and doesn't run the revert.
 
 ### Writing an exercise
 
