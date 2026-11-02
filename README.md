@@ -62,7 +62,7 @@ service:
 |---|---|
 | `path` | Where to write the file, relative to the working directory. Parent folders are created as needed. |
 | `lang` | Syntax highlighting. Defaults to the file extension. |
-| `editable` | `true` lets the learner edit the file, which is then kept in sync with the file on disk (see below). |
+| `editable` | `true` lets the learner edit the file; saving writes it to disk and checks it (see below). |
 | `learner` | The learner's current version of the file. Written by the plugin; you don't need to set it. |
 | `timeout`, `id`, `depends-on`, `requires`, `revert`, `idempotent` | As for `run` blocks. A file block's revert gets `$FILE`, as its check does. |
 | `expect.content` | Exact expected file content. |
@@ -78,15 +78,15 @@ Shorthands: `expect: <text>` means `expect.content`, `check: <command>` means `c
 
 Unknown keys inside `expect` or `check` show a warning on the block. The old `check.md5` points you to `check.expect.md5`.
 
-**Editable file blocks stay in sync with their file:**
-- The content below `---` stays the author's original. The learner's version is stored in the header as `learner:`, so it survives restarts.
-- Typing writes the file and runs its checks about half a second after the learner stops. The note is updated when the editor loses focus, because updating it redraws the block.
+**Editable file blocks:**
+- The content below `---` stays the author's original. The learner's version is stored in the header as `learner:`, so it survives restarts. The note is updated when the editor loses focus, because updating it redraws the block.
+- Typing doesn't write the file. The learner writes it, and runs its checks, with the save button or Shift+Enter, as they'd run a `run` block. Until then the footer says the file is *not saved to disk yet*.
 - If the file changes on disk some other way (a `run` block's `sed -i`, another editor), the block shows the new content and stores it in the note.
 - Opening a note creates a missing file, unless Reset deleted it this session. If the file on disk differs from the block, the disk version is taken as the learner's latest. The file is then checked as it is, so wrong files show red straight away. That runs the block's `check` command; turn off **Check when a note opens** if you'd rather it only ran after an edit.
 - **Reset** goes back to the original, removes `learner:` and rewrites the file.
 
 **Writing:**
-- A non-editable file block has a write button that writes the file and runs its checks. Editable blocks don't need one; Shift+Enter in their editor writes and checks right away instead of waiting.
+- Every file block has a save button that writes the file and runs its checks. In an editable block's editor, Shift+Enter does the same.
 - Running a `run` block first writes every file block **above** it that changed since it was last written. Edits get picked up, and files that earlier commands modified aren't reset each time.
 - **Run all** writes every file block.
 
@@ -284,7 +284,7 @@ revert:
 
 **Without a `revert:` (the button shows the eraser),** Reset clears the block's result, on screen and from the note.
 
-**File blocks** also have their file deleted, after the revert (if any) and clearing the result, so the lab is back to before the block was written. Editable file blocks also lose the learner's edits: the block goes back to the author's original. To be safe, the file is only deleted while it's still the one the block wrote; if something else has changed it since, it's kept and a notice says so. A deleted file stays deleted until the block writes it again: when the learner edits it, when you press write, when a run block below runs and needs it, or when the note is next opened after Obsidian restarts. Reset is available on a file block whenever its file is on disk or the learner has edited it, even with no result.
+**File blocks** also have their file deleted, after the revert (if any) and clearing the result, so the lab is back to before the block was written. Editable file blocks also lose the learner's edits: the block goes back to the author's original. To be safe, the file is only deleted while it's still the one the block wrote; if something else has changed it since, it's kept and a notice says so. A deleted file stays deleted until the block writes it again: when you press save, when a run block below runs and needs it, or when the note is next opened after Obsidian restarts. Reset is available on a file block whenever its file is on disk or the learner has edited it, even with no result.
 
 **Undo order:** Reset is unavailable while a block that depends on this one still has a result. Reset the dependent first, as with undo. It's also unavailable while the block is running, or when there's nothing to reset. The button's tooltip says which.
 

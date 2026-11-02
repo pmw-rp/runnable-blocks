@@ -76,7 +76,7 @@ expect:
 
 ## Editing files
 
-A `file` block writes its content to `path`, relative to the note's folder. Its header can also say how to validate the file. An `editable` file block stays in sync with the file: as you type, the file is rewritten and checked, and the border turns green or red. Changes made to the file elsewhere show up in the block. Your version is stored in the note, and the original stays alongside it, so **Reset** can go back to it.
+A `file` block writes its content to `path`, relative to the note's folder. Its header can also say how to validate the file. An `editable` file block lets you edit the file: press save (or Shift+Enter) to write it and check it, and the border turns green or red. Changes made to the file elsewhere show up in the block. Your version is stored in the note, and the original stays alongside it, so **Reset** can go back to it.
 
 ### Check a value pulled out of the file
 

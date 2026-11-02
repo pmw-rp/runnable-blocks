@@ -562,16 +562,16 @@ class RunBlock extends MarkdownRenderChild {
     this.plugin.settleDraft(this.key, this.meta);
     const isFile = this.meta.kind === 'file';
     if (isFile) el.addClass('run-block-file');
-    // Editable file blocks are kept in sync with the file on disk, both ways.
+    // Editable file blocks are written when the learner saves, and take in changes made to the file elsewhere.
     this.synced = isFile && this.meta.editable;
 
     const bar = el.createDiv({ cls: 'run-block-bar' });
     if (isFile) {
-      // Synced blocks write themselves as the learner types; others are written on request.
-      if (!this.synced) this.runBtn = this.button(bar, 'save', `Write ${this.meta.path || 'file'}`, () => this.execute());
+      // Written on request, like a run block runs: the write button, or Shift+Enter in the editor.
+      this.runBtn = this.button(bar, 'save', `Write ${this.meta.path || 'file'}`, () => this.execute(), { keepFocus: true });
       bar.createSpan({ cls: 'run-block-lang run-block-path', text: this.meta.path || '(no path)' });
     } else {
-      this.runBtn = this.button(bar, 'play', 'Run', () => this.execute());
+      this.runBtn = this.button(bar, 'play', 'Run', () => this.execute(), { keepFocus: true });
       this.stopBtn = this.button(bar, 'square', 'Stop', () => this.plugin.stop(this.key));
       bar.createSpan({ cls: 'run-block-lang', text: this.meta.lang });
     }
@@ -636,9 +636,13 @@ class RunBlock extends MarkdownRenderChild {
     return this.plugin.runCell(this.ctx.sourcePath, this.meta);
   }
 
-  button(parent, icon, label, onClick) {
+  // `keepFocus`: pressing the button doesn't take focus from the block's editor. The editor saves the
+  // learner's code into the note when it loses focus, which re-renders the block, so the click would
+  // land on a button that's just been replaced, and be lost. The run saves the code anyway.
+  button(parent, icon, label, onClick, { keepFocus = false } = {}) {
     const btn = parent.createEl('button', { cls: 'run-block-btn clickable-icon', attr: { 'aria-label': label } });
     setIcon(btn, icon);
+    if (keepFocus) btn.addEventListener('mousedown', (evt) => evt.preventDefault());
     btn.addEventListener('click', (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
@@ -671,8 +675,7 @@ class RunBlock extends MarkdownRenderChild {
       // Keep Live Preview from treating clicks and keys in the editor as edits to the note itself.
       isolate: true,
       onInput: (value) => {
-        if (this.synced) this.plugin.editFile(this.ctx.sourcePath, this.meta, value);
-        else this.plugin.setDraft(this.key, this.meta, value);
+        this.plugin.setDraft(this.key, this.meta, value);
       },
       onRun: () => this.execute(),
     });
@@ -959,9 +962,9 @@ class RunBlock extends MarkdownRenderChild {
       if (!res || !res.error) foot.createSpan({ cls: 'is-fail', text: disk.error });
     } else {
       const states = {
-        missing: ['', 'not on disk yet'],
+        missing: ['', this.meta.editable ? 'not on disk yet: press save to write it' : 'not on disk yet'],
         same: ['is-pass', 'on disk, matches this block'],
-        differs: ['', 'on disk, differs from this block'],
+        differs: ['', this.meta.editable ? 'not saved to disk yet: press save to write it' : 'on disk, differs from this block'],
       };
       const [cls, text] = states[disk.state];
       foot.createSpan({ text: disk.relPath });
@@ -990,7 +993,6 @@ class RunnableBlocksPlugin extends Plugin {
     this.drafts = new Map(); // key -> edited code of an editable block, until saved or reset
     this.widgets = new Map(); // key -> Set<RunBlock>
     this.written = new Map(); // key -> md5 of what a file block last wrote to disk
-    this.writeTimers = new Map(); // key -> pending write of a synced file block after typing
     this.noteIndex = new Map(); // note path -> metas of its blocks, for resolving depends-on across the vault
     this.heights = new Map(); // key -> last rendered height, so a re-render can start at it
     this.outputScroll = new Map(); // key -> { top, atBottom } of the block's output box
@@ -1123,7 +1125,6 @@ class RunnableBlocksPlugin extends Plugin {
     // Obsidian may leave these blocks on screen; show their plain code rather than buttons that no
     // longer do anything.
     for (const widgets of this.widgets.values()) for (const widget of widgets) widget.showPlainCode();
-    for (const timer of this.writeTimers.values()) clearTimeout(timer);
   }
 
   async saveSettings() {
@@ -1615,24 +1616,6 @@ class RunnableBlocksPlugin extends Plugin {
   // Called when a block (re-)renders: a draft equal to what the note now says has been saved.
   settleDraft(key, meta) {
     if (this.drafts.get(key) === meta.code) this.drafts.delete(key);
-  }
-
-  // Learner typing in a synced file block: keep it in memory, write the file (and validate it)
-  // shortly after typing stops, and save it into the note when the editor loses focus.
-  editFile(sourcePath, meta, value) {
-    const key = this.keyFor(sourcePath, meta);
-    const code = normalize(value);
-    if (code === meta.code) this.drafts.delete(key);
-    else this.drafts.set(key, code);
-    this.notify(key);
-    clearTimeout(this.writeTimers.get(key));
-    this.writeTimers.set(key, setTimeout(() => {
-      this.writeTimers.delete(key);
-      const running = this.procs.get(key);
-      // A check still running for an earlier version: write again once it's done.
-      if (running) running.promise.then(() => this.writeFileBlock(sourcePath, meta));
-      else this.writeFileBlock(sourcePath, meta);
-    }, 500));
   }
 
   // Saves an editable block's current code into the note's `learner:` header entry, or removes the
@@ -2175,7 +2158,7 @@ class RunnableBlocksPlugin extends Plugin {
     }
   }
 
-  // Editable file blocks are kept in sync with their file, and reset to the author's original.
+  // Editable file blocks follow changes to their file on disk, and reset to the author's original.
   isSynced(meta) {
     return meta.kind === 'file' && meta.editable;
   }
@@ -2183,7 +2166,6 @@ class RunnableBlocksPlugin extends Plugin {
   // Part of resetting an editable block: the learner's edits are removed from the note.
   async discardEdits(sourcePath, meta) {
     const key = this.keyFor(sourcePath, meta);
-    clearTimeout(this.writeTimers.get(key));
     this.drafts.set(key, meta.original);
     this.results.delete(key);
     await this.persistLearner(sourcePath, meta);
