@@ -40,7 +40,7 @@ for (const note of notes) {
     const first = (m.code.split('\n').find((l) => l.trim()) || '').slice(0, 50);
     const reqs = m.requires.map((r) => r.type).join(',');
     const flags = [m.idempotent ? '' : 'once', m.revert ? 'revert' : '', m.manual ? 'manual' : '', m.editable ? 'editable' : '',
-      reqs && `needs[${reqs}]`].filter(Boolean).join(' ');
+      reqs && `needs[${reqs}]`, m.insteadOf.length ? `instead-of[${m.insteadOf.length}]` : ''].filter(Boolean).join(' ');
     console.log(`  line ${String(m.lineStart + 1).padStart(4)} ${m.kind.padEnd(4)} ${m.id ? m.id.slice(0, 8) : 'NO-ID   '} ${flags.padEnd(36)} ${first}`);
     for (const w of m.warnings) problem(w);
     if (!m.id) problem('no id: give it one with: uuidgen | tr A-Z a-z');
@@ -51,7 +51,14 @@ for (const note of notes) {
       if (!dep) problem(`depends on ${r.id}, which isn't in any of these notes`);
       else if (dep.path === note && dep.meta.lineStart > m.lineStart) problem(`depends on ${r.id.slice(0, 8)}, which is below it`);
     }
-    if (m.revert && /\bkubectl\b(?![^\n]*--context)/.test(m.revert.run)) problem('revert runs kubectl without --context, so it acts on whatever cluster is current');
+    for (const id of m.insteadOf) {
+      const alt = P.findBlock(id, note);
+      if (!alt) problem(`instead-of ${id}, which isn't in any of these notes`);
+      else if (alt.meta.id === m.id) problem('instead-of names the block itself');
+      else if (alt.meta.insteadOf.length) problem(`instead-of ${id.slice(0, 8)}, which is itself an alternative`);
+    }
+    // `kubectl config` only edits the kubeconfig, so it doesn't need one.
+    if (m.revert && /\bkubectl\b(?!\s+config\b)(?![^\n]*--context)/.test(m.revert.run)) problem('revert runs kubectl without --context, so it acts on whatever cluster is current');
   }
 }
 console.log(`\n${problems} problem(s)`);

@@ -5,6 +5,7 @@
 //
 //   node run.js NOTE [--include-manual] [--only ID,ID] [--from ID] [--keep-going]
 //                    [--answer ID CODE]...   fill in an editable block, as a learner would; CODE can be @FILE
+//                    [--choose ID,ID]        take these alternative paths (the ids of their instead-of blocks)
 //   node run.js NOTE --reverts      runs the note's revert commands from the bottom up, like Reset all
 //
 // Blocks run in the note's folder, like the plugin's default working directory, with bash for
@@ -13,7 +14,8 @@
 //
 // Prerequisites are enforced as in Obsidian: a block whose dependencies haven't passed, whose
 // `command:` checks fail, or whose code doesn't match its `matches:` patterns is reported BLOCKED
-// and not run. Results are kept in a state file ($COURSE_RUN_STATE, by default in the temp folder),
+// and not run. Alternative paths (an `instead-of` block, and the blocks that depend on it) are skipped,
+// as Run all skips them, unless --choose names them; then the blocks they replace are skipped instead. Results are kept in a state file ($COURSE_RUN_STATE, by default in the temp folder),
 // so a lesson run later sees what its setup page's run did. --reverts clears that note's results.
 //
 // Results aren't written into the note, so Obsidian doesn't know these blocks ran: blocks that
@@ -32,7 +34,7 @@ const note = args[0] && !args[0].startsWith('--') ? args[0] : null;
 const flag = (name) => args.includes(`--${name}`);
 const option = (name) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : null; };
 if (!note) {
-  console.error('Usage: node run.js NOTE [--include-manual] [--only ID,ID] [--from ID] [--keep-going] [--reverts]');
+  console.error('Usage: node run.js NOTE [--include-manual] [--only ID,ID] [--from ID] [--keep-going] [--choose ID,ID] [--reverts]');
   process.exit(2);
 }
 
@@ -101,6 +103,11 @@ for (let i = 0; i < args.length; i++) {
 if (flag('reverts')) {
   let failed = 0;
   for (const m of metas.filter((x) => x.revert).reverse()) {
+    // Like Reset all, blocks on the path not taken have nothing to undo.
+    if (P.replacement(NOTE, m) || P.onUnusedPath(NOTE, m)) {
+      console.log(`\n=== revert ${m.id.slice(0, 8)} ${blockLabel(m)}\n  -> skipped: on the path not taken`);
+      continue;
+    }
     console.log(`\n=== revert ${m.id.slice(0, 8)} ${blockLabel(m)}`);
     const extra = m.kind === 'file' ? { FILE: path.resolve(cwd, m.path) } : {};
     const r = runCode(m.revert.lang, m.revert.run, m.timeout || 300, extra);
@@ -120,6 +127,7 @@ if (flag('reverts')) {
   process.exit(failed);
 }
 
+const chosen = (m) => !!option('choose') && option('choose').split(',').some((id) => match(m, id));
 let selected = metas.filter((m) => flag('include-manual') || !m.manual);
 if (option('only')) selected = selected.filter((m) => option('only').split(',').some((id) => match(m, id)));
 if (option('from')) {
@@ -132,6 +140,14 @@ for (const m of selected) {
   console.log(`\n=== ${m.kind} ${m.id ? m.id.slice(0, 8) : '(no id)'} ${blockLabel(m)}`);
   const key = P.keyFor(NOTE, m);
   const code = P.currentCode(key, m);
+  // A chosen path is the learner's choice from the start, as if they'd run its first block already.
+  const alt = P.replacement(NOTE, m) || P.alternativesFor(m).find((s) => chosen(s.meta));
+  const notChosen = P.pathsThrough(NOTE, m).find((s) => !chosen(s.meta) && !P.pathInUse(P.alternativePath(s)));
+  if (alt || notChosen) {
+    console.log(`  -> skipped: ${alt ? `${blockLabel(alt.meta)} is used instead` : `on the alternative path of ${blockLabel(notChosen.meta)}, which isn't chosen`}`);
+    summary.push({ m, ok: true, label: 'Skipped' });
+    continue;
+  }
   // Command prerequisites are run each time, as the plugin does before every run.
   for (const r of m.requires.filter((x) => x.type === 'command')) {
     const c = runCode(r.lang, r.run, r.timeout);

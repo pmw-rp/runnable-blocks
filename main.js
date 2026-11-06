@@ -74,7 +74,7 @@ const MAX_HIGHLIGHT = 200000;
 
 // Settings a block's YAML header may use. A header only counts as one if it uses at least one of
 // these, so a file whose own content has a "---" line isn't mistaken for a header.
-const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'idempotent', 'timeout', 'depends-on', 'requires', 'revert', 'expect', 'check', 'original', 'learner', 'result']);
+const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'idempotent', 'timeout', 'depends-on', 'requires', 'instead-of', 'revert', 'expect', 'check', 'original', 'learner', 'result']);
 
 // Saved output is cut to this many characters per stream; checks then compare hashes instead.
 const MAX_SAVED_OUTPUT = 10000;
@@ -448,6 +448,13 @@ function evaluate(meta, res) {
   return { status: 'ok', label: 'Done', items };
 }
 
+// Whether a block's result is a success: it finished, and passed its checks, or ran cleanly without any.
+function succeeded(meta, res) {
+  if (!res || !res.done) return false;
+  const { status } = evaluate(meta, res);
+  return status === 'pass' || status === 'ok';
+}
+
 // A file block passes when every validation it declares passes. Each check is listed in `items`.
 function evaluateFile(meta, res) {
   const items = [];
@@ -818,7 +825,7 @@ class RunBlock extends MarkdownRenderChild {
     this.statusEl.className = 'run-block-status';
     this.statusEl.empty();
     this.outEl.empty();
-    this.containerEl.removeClass('is-ok', 'is-pass', 'is-fail', 'is-error', 'is-blocked');
+    this.containerEl.removeClass('is-ok', 'is-pass', 'is-fail', 'is-error', 'is-blocked', 'is-replaced');
     // Only change is-running when running starts or stops: removing it even briefly, while output
     // streams in, restarts its pulse animation.
     this.containerEl.toggleClass('is-running', running || reverting);
@@ -912,12 +919,50 @@ class RunBlock extends MarkdownRenderChild {
         : once ? `Can't run again: ${once}`
         : (this.meta.kind === 'file' ? `Write ${this.meta.path || 'file'}` : 'Run'));
     }
+    // An alternative that hasn't run says what it's instead of: Run all doesn't choose it.
+    const instead = !blocked && !res ? (this.meta.insteadOf || []).map((id) => this.plugin.findBlock(id, this.ctx.sourcePath)).filter(Boolean) : [];
     this.waitEl.empty();
-    this.waitEl.toggle(blocked || !!once);
+    this.waitEl.toggle(blocked || !!once || instead.length > 0);
     if (!blocked) {
       if (once) {
         setIcon(this.waitEl.createSpan({ cls: 'run-block-waiting-icon' }), 'repeat-1');
         this.waitEl.createSpan({ text: `Runs once: ${once}.` });
+      } else if (instead.length) {
+        setIcon(this.waitEl.createSpan({ cls: 'run-block-waiting-icon' }), 'split');
+        this.waitEl.createSpan({ text: 'Instead of ' });
+        instead.forEach((f, i) => {
+          if (i) this.waitEl.createSpan({ text: i === instead.length - 1 ? ' and ' : ', ' });
+          this.waitEl.createEl('code', { text: blockLabel(f.meta) });
+          this.waitEl.createSpan({ cls: 'run-block-waiting-reason', text: ` (line ${f.meta.lineStart + 1}${f.path === this.ctx.sourcePath ? '' : ` in ${noteName(f.path)}`})` });
+        });
+        this.waitEl.createSpan({ text: '. Run all takes the other way, so run this with ▶ to choose it.' });
+      }
+      return;
+    }
+    // A block of another note, as code, with a link to its note.
+    const blockRef = (w) => {
+      this.waitEl.createEl('code', { text: w.label });
+      if (!w.note) return;
+      this.waitEl.createSpan({ text: ' in ' });
+      const link = this.waitEl.createEl('a', { cls: 'internal-link', text: noteName(w.note), href: w.note });
+      link.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        this.plugin.app.workspace.openLinkText(w.note, this.ctx.sourcePath, evt.metaKey || evt.ctrlKey);
+      });
+    };
+    const reason = (text) => this.waitEl.createSpan({ cls: 'run-block-waiting-reason', text: ` (${text})` });
+    // Replaced by an alternative that's in use: the block isn't needed, rather than blocked.
+    const replaced = waiting.find((w) => w.type === 'replaced');
+    if (replaced) {
+      setIcon(this.waitEl.createSpan({ cls: 'run-block-waiting-icon' }), 'split');
+      this.waitEl.createSpan({ text: "Not needed: you're using " });
+      blockRef(replaced);
+      reason(`line ${replaced.line}`);
+      this.waitEl.createSpan({ text: ' instead. Reset that to do this instead.' });
+      if (!res) {
+        this.statusEl.addClass('is-replaced');
+        this.statusEl.setText('Not needed');
+        this.containerEl.addClass('is-replaced');
       }
       return;
     }
@@ -925,24 +970,20 @@ class RunBlock extends MarkdownRenderChild {
     this.waitEl.createSpan({ text: 'Before this can run: ' });
     waiting.forEach((w, i) => {
       if (i) this.waitEl.createSpan({ text: '; ' });
-      const reason = (text) => this.waitEl.createSpan({ cls: 'run-block-waiting-reason', text: ` (${text})` });
       if (w.type === 'matches') {
         this.waitEl.createSpan({ text: w.message });
       } else if (w.type === 'command') {
         if (w.message) this.waitEl.createSpan({ text: `${w.message} ` });
         this.waitEl.createEl('code', { text: w.label });
         reason(w.message ? w.reason : `has to succeed: ${w.reason}`);
+      } else if (w.type === 'other-path') {
+        this.waitEl.createSpan({ text: 'reset ' });
+        blockRef(w);
+        reason(`line ${w.line}, ${w.reason}`);
+        this.waitEl.createSpan({ text: ' first: this is instead of it' });
       } else {
         this.waitEl.createSpan({ text: w.message ? `${w.message}: run ` : 'run ' });
-        this.waitEl.createEl('code', { text: w.label });
-        if (w.note) {
-          this.waitEl.createSpan({ text: ' in ' });
-          const link = this.waitEl.createEl('a', { cls: 'internal-link', text: noteName(w.note), href: w.note });
-          link.addEventListener('click', (evt) => {
-            evt.preventDefault();
-            this.plugin.app.workspace.openLinkText(w.note, this.ctx.sourcePath, evt.metaKey || evt.ctrlKey);
-          });
-        }
+        blockRef(w);
         const where = w.line ? `line ${w.line}${w.below ? ', which is below this block' : ''}, ` : '';
         reason(`${where}${w.reason}`);
       }
@@ -1197,6 +1238,16 @@ class RunnableBlocksPlugin extends Plugin {
     // requires: what has to be true before the block can run. depends-on is shorthand for its block entries.
     const requires = this.parseRequires(h['depends-on'], h.requires, warnings);
     const dependsOn = requires.filter((r) => r.type === 'block').map((r) => r.id);
+    // instead-of: the blocks this one is an alternative to, such as "use your own cluster" instead of
+    // "create a kind cluster". It starts an alternative path: it and the blocks that depend on it.
+    // Once the path is in use, those blocks aren't needed, and once it has succeeded, they count as
+    // done for the blocks that depend on them.
+    const insteadOf = [];
+    for (const v of h['instead-of'] == null ? [] : [].concat(h['instead-of'])) {
+      const id = String(v).trim().toLowerCase();
+      if (UUID_RE.test(id)) insteadOf.push(id);
+      else warnings.push(`instead-of: "${v}" isn't a block id. Use the id (a UUID) of the block this replaces.`);
+    }
     // A scalar is shorthand for the map's main key (`expect: 3`, `check: <command>`); unknown keys
     // inside the maps get a warning, with a pointer for likely mix-ups.
     const asMap = (value, keyPath, allowed) => {
@@ -1222,6 +1273,7 @@ class RunnableBlocksPlugin extends Plugin {
       idempotent: h.idempotent !== false,
       requires,
       dependsOn,
+      insteadOf,
       saved: h.result && typeof h.result === 'object' ? h.result : null,
       revert: null,
       timeout: Number(h.timeout) || null,
@@ -1350,6 +1402,29 @@ class RunnableBlocksPlugin extends Plugin {
   // Each entry in `waiting` has a `reason`, and a `summary` for notices.
   prerequisiteState(sourcePath, meta) {
     const waiting = [];
+    // Two ways of doing the same thing (see instead-of) can't both be in use: a block can't run while
+    // an alternative to it has, nor an alternative while a block it replaces has.
+    const alt = this.replacement(sourcePath, meta);
+    if (alt) {
+      const label = blockLabel(alt.meta);
+      const note = alt.path === sourcePath ? null : alt.path;
+      waiting.push({
+        type: 'replaced', id: alt.meta.id, label, line: alt.meta.lineStart + 1, note, reason: 'in use',
+        summary: `it isn't needed: you're using line ${alt.meta.lineStart + 1} (${label})${note ? ` in ${noteName(note)}` : ''} instead. Reset that to do this instead`,
+      });
+    }
+    const others = new Set();
+    for (const start of this.pathsThrough(sourcePath, meta)) for (const id of start.meta.insteadOf) others.add(id);
+    for (const id of others) {
+      const found = this.findBlock(id, sourcePath);
+      if (!found || !this.resultFor(found.path, found.meta)) continue;
+      const label = blockLabel(found.meta);
+      const note = found.path === sourcePath ? null : found.path;
+      waiting.push({
+        type: 'other-path', id, label, line: found.meta.lineStart + 1, note, reason: 'already run',
+        summary: `reset line ${found.meta.lineStart + 1} (${label})${note ? ` in ${noteName(note)}` : ''} first: this is instead of it`,
+      });
+    }
     for (const req of meta.requires || []) {
       if (req.type === 'command') {
         const check = this.commandChecks.get(this.commandKey(sourcePath, req));
@@ -1388,6 +1463,8 @@ class RunnableBlocksPlugin extends Plugin {
         if (verdict.status === 'fail') reason = 'failed its checks';
         else if (verdict.status !== 'pass' && verdict.status !== 'ok') reason = verdict.label.toLowerCase();
       }
+      // An alternative path that has succeeded, every block of it, stands in for the blocks it replaces.
+      if (reason && this.alternativesFor(dep).some((start) => this.pathSucceeded(this.alternativePath(start)))) reason = null;
       if (reason) {
         const label = blockLabel(dep);
         waiting.push({
@@ -1775,7 +1852,8 @@ class RunnableBlocksPlugin extends Plugin {
   notifyDependents() {
     for (const widgets of this.widgets.values()) {
       for (const widget of widgets) {
-        if (widget.meta.requires.length) widget.scheduleRender();
+        const m = widget.meta;
+        if (m.requires.length || m.insteadOf.length || this.alternativesFor(m).length) widget.scheduleRender();
       }
     }
   }
@@ -1901,7 +1979,7 @@ class RunnableBlocksPlugin extends Plugin {
     const metas = this.metasFor(await this.readNote(sourcePath)).map(({ meta }) => meta);
     const self = metas.findIndex((m) => m.kind === 'run' && this.keyFor(sourcePath, m) === key);
     for (const m of metas.slice(0, Math.max(self, 0))) {
-      if (m.kind !== 'file' || this.rerunBlocker(sourcePath, m)) continue;
+      if (m.kind !== 'file' || this.rerunBlocker(sourcePath, m) || this.replacement(sourcePath, m) || this.onUnusedPath(sourcePath, m)) continue;
       const fileKey = this.keyFor(sourcePath, m);
       if (this.written.get(fileKey) !== md5(this.currentCode(fileKey, m))) await this.writeFileBlock(sourcePath, m);
     }
@@ -2070,16 +2148,85 @@ class RunnableBlocksPlugin extends Plugin {
 
   // Blocks that depend on this one and still have a result. Like undo, they have to be reverted first.
   // They can be in any note. Each is described for messages: its label, and its note if it's another.
+  // A block on an alternative path also holds up the dependents of the blocks the path stands in for.
   activeDependents(sourcePath, meta) {
     if (!meta.id) return [];
+    const ids = [meta.id];
+    for (const start of this.pathsThrough(sourcePath, meta)) ids.push(...start.meta.insteadOf);
     const out = [];
     for (const [path, metas] of this.noteIndex) {
       for (const m of metas) {
-        if (!m.dependsOn.includes(meta.id) || !this.resultFor(path, m)) continue;
+        if (!m.dependsOn.some((id) => ids.includes(id)) || !this.resultFor(path, m)) continue;
         out.push(path === sourcePath ? blockLabel(m) : `${blockLabel(m)} in ${noteName(path)}`);
       }
     }
     return out;
+  }
+
+  // The blocks, in any note, that name this one in their `instead-of`.
+  alternativesFor(meta) {
+    if (!meta.id) return [];
+    const out = [];
+    for (const [path, metas] of this.noteIndex) {
+      for (const m of metas) if (m.insteadOf && m.insteadOf.includes(meta.id)) out.push({ path, meta: m });
+    }
+    return out;
+  }
+
+  // An alternative path: the block that starts it (with instead-of), then the blocks that depend on
+  // it, directly or through each other, in any note. Each is { path, meta }. Blocks both ways need,
+  // such as installing an operator once there's a cluster, depend on the usual blocks instead, so
+  // they aren't part of it.
+  alternativePath(start) {
+    const steps = [start];
+    const ids = new Set([start.meta.id]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const [path, metas] of this.noteIndex) {
+        for (const m of metas) {
+          if (!m.id || ids.has(m.id) || !m.dependsOn.some((d) => ids.has(d))) continue;
+          ids.add(m.id);
+          steps.push({ path, meta: m });
+          grew = true;
+        }
+      }
+    }
+    return steps;
+  }
+
+  // A path is in use once any of its blocks has run, or is running, and has succeeded once all of
+  // them have, apart from manual ones.
+  pathInUse(steps) {
+    return steps.some(({ path, meta }) => this.resultFor(path, meta));
+  }
+
+  pathSucceeded(steps) {
+    return steps.every(({ path, meta }) => meta.manual || succeeded(meta, this.resultFor(path, meta)));
+  }
+
+  // The starts of the alternative paths this block is on: itself, if it has instead-of, or the
+  // alternatives it depends on.
+  pathsThrough(sourcePath, meta) {
+    if (!meta.id) return [];
+    const starts = [];
+    for (const [path, metas] of this.noteIndex) {
+      for (const m of metas) {
+        if (!m.insteadOf || !m.insteadOf.length) continue;
+        const start = { path, meta: m };
+        if (this.alternativePath(start).some((step) => step.meta.id === meta.id)) starts.push(start);
+      }
+    }
+    return starts;
+  }
+
+  // Whether a block is on an alternative path that isn't in use, which Run all leaves alone.
+  onUnusedPath(sourcePath, meta) {
+    return this.pathsThrough(sourcePath, meta).some((start) => !this.pathInUse(this.alternativePath(start)));
+  }
+
+  // The alternative this block has been replaced by: the start of a path that's in use. Null if none.
+  replacement(sourcePath, meta) {
+    return this.alternativesFor(meta).find((start) => this.pathInUse(this.alternativePath(start))) || null;
   }
 
   // Why a block can't run again, or null if it can: a block that isn't idempotent runs once, until
@@ -2272,15 +2419,21 @@ class RunnableBlocksPlugin extends Plugin {
 
   async runAll(file) {
     await this.assignAllIds(file.path);
+    // An alternative path (instead-of) is a choice, made with ▶, so Run all takes the usual one. Once
+    // an alternative is in use, Run all follows it instead, and skips the blocks it replaces.
     const blocks = this.metasFor(await this.readNote(file.path), file.path).filter(({ meta }) => !meta.manual);
     if (!blocks.length) {
       new Notice('No run or file blocks in this note.');
       return;
     }
-    const counts = { pass: 0, ok: 0, kept: 0 };
+    const counts = { pass: 0, ok: 0, kept: 0, replaced: 0 };
     const notice = new Notice(`Running ${blocks.length} block(s)…`, 0);
     for (const [i, { meta }] of blocks.entries()) {
       notice.setMessage(`Running block ${i + 1} of ${blocks.length}…`);
+      if (this.replacement(file.path, meta) || this.onUnusedPath(file.path, meta)) {
+        counts.replaced++;
+        continue;
+      }
       await this.checkPrerequisites(file.path, meta, { force: true });
       const deps = this.prerequisiteState(file.path, meta);
       if (deps.blocked) {
@@ -2314,7 +2467,8 @@ class RunnableBlocksPlugin extends Plugin {
     }
     notice.hide();
     const kept = counts.kept ? `, ${counts.kept} kept from an earlier run (not idempotent)` : '';
-    new Notice(`Ran ${blocks.length - counts.kept} block(s): ${counts.pass} passed, ${counts.ok} without checks${kept}.`, 8000);
+    const replaced = counts.replaced ? `, ${counts.replaced} skipped (on the path not taken)` : '';
+    new Notice(`Ran ${blocks.length - counts.kept - counts.replaced} block(s): ${counts.pass} passed, ${counts.ok} without checks${kept}${replaced}.`, 8000);
   }
 
 }

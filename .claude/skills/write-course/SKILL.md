@@ -50,11 +50,12 @@ Follow the shape of `Shadow Linking/1 Setup.md`:
 3. **Dependencies**: each action depends on the previous action. Each check depends on its action.
 4. **Reverts**: each action gets a revert that undoes exactly that step, and copes with the step being half done or already undone:
    - Start reverts that need the cluster with a guard: `kind get clusters 2>/dev/null | grep -qx NAME || { echo "The cluster is already gone, so there is nothing to undo"; exit 0; }`.
-   - Name the cluster explicitly: `kubectl --context kind-NAME`, `helm --kube-context kind-NAME`. Otherwise a revert run while another lab is current deletes namespaces from the wrong cluster.
+   - Name the cluster explicitly: `kubectl --context kind-NAME`, `helm --kube-context kind-NAME`. Otherwise a revert run while another lab is current deletes namespaces from the wrong cluster. A course that also lets learners use their own cluster uses a context name of its own instead (step 8).
    - Use `--ignore-not-found`, `--wait`, and `|| true` where something may already be gone.
 5. **Waits**: after anything asynchronous, wait for it inside the action block, not in a separate block the learner might skip. `kind create cluster` returns before its nodes are Ready, so follow it with `kubectl wait --for=condition=Ready nodes --all`. Use `kubectl wait`, `helm --wait`, or a bounded loop: `for i in $(seq 1 30); do CHECK && break; sleep 1; done`. Raise `timeout:` on blocks that take more than 30 seconds.
 6. **Port forwards and profiles**: start background processes with `nohup … &`, record their PIDs in `lab/*.pid`, and make the block safe to run again (kill the old ones first). Its revert kills them.
 7. **Teardown**: Reset all, bottom up, is the normal teardown. Keep a `manual: true` "if a reset gets stuck" block that deletes everything at once.
+8. **Bring your own**: when the lab needs infrastructure a learner may already have, such as a Kubernetes cluster, offer it as an alternative path with `instead-of`, next to the step that creates it. Both ways must leave the same state (for Kubernetes, one context name that every later block uses), and the own-infrastructure way checks it's suitable before anything changes it. See "Alternative paths" in `references/block-format.md`, and Shadow Linking's step 2 as the model.
 
 ### 4. Write each lesson
 
@@ -113,7 +114,7 @@ It runs blocks as Run all would, enforces prerequisites (including across pages,
 
 Then test the teardown: `node $R "<page>" --reverts` for each page, lessons first and setup last, and run the setup reverts a second time to check they cope with everything already being gone.
 
-Tell the user before building a lab. It uses Docker and minutes of time, and it may clash with a lab they're running. Leave nothing running afterwards. Blocks run by the script aren't recorded in the notes, so the user can't Reset them in Obsidian.
+Tell the user before building a lab. It uses Docker and minutes of time, and it may clash with a lab they're running. Run it against a copy of the course (`cp -R "<vault>/<Course>" <scratch>/`), not the vault's folder: if the user has the course open in Obsidian, editable file blocks take in whatever the test writes to `lab/` as the learner's answer. Shared names, such as kube contexts, rpk profiles and ports, still clash, so don't test a course while the user is working through it. Leave nothing running afterwards. Blocks run by the script aren't recorded in the notes, so the user can't Reset them in Obsidian.
 
 ### 8. Hand it over
 

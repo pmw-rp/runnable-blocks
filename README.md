@@ -32,6 +32,7 @@ The header can also open with its own `---`, like note frontmatter. Only the fir
 | `idempotent` | `false` for a block that would fail, or do harm, if run a second time. It then runs once, until it's reset (see [Idempotency](#idempotency)). Defaults to `true`. |
 | `depends-on` | The id of a block above, or in another note, or a list of ids, that must have run successfully first (see [Prerequisites](#prerequisites)). |
 | `requires` | What has to be true before the block can run: blocks that have run, commands that succeed, patterns the code matches (see [Prerequisites](#prerequisites)). |
+| `instead-of` | The id of a block, or a list of ids, that this block is an alternative to. It starts an alternative path, such as using your own cluster instead of creating one (see [Alternative paths](#alternative-paths)). Works on file blocks too. |
 | `revert` | A command that undoes what the block did: a string, or `lang` and `run`. **Reset** runs it (see [Reset and revert](#reset-and-revert)). |
 | `expect.output` | Exact expected stdout. |
 | `expect.md5` | Expected MD5 of stdout. |
@@ -225,6 +226,32 @@ If a prerequisite stops being met after the block ran, the block keeps its own r
 **Getting an id:** switch to source mode and copy the block's `id:` line. A block gets its id the first time it runs, so run it once first if it hasn't got one.
 
 **Problems that show:** a block id that isn't a UUID, an entry with none or more than one of `block`, `command` and `matches`, an unknown key in an entry, and a pattern that isn't a valid regular expression each get a warning; a bad pattern is ignored. An id that isn't in the vault, or a block below the dependent one in the same note, shows in the Before this can run line.
+
+### Alternative paths
+
+Sometimes there's more than one way to get somewhere. A course that needs a Kubernetes cluster can create one with kind, or use one the learner already has. Write the usual way as normal, then the alternative, and mark the alternative's first block with `instead-of`, listing the blocks of the usual way it replaces:
+
+````
+```file
+id: 6e8613da-a022-4d3c-97b2-0245013f5572
+path: lab/own-cluster.env
+editable: true
+instead-of:
+  - aed386f0-51c7-45da-865a-c5c18cff4d5a   # create the kind cluster
+  - 5fc82bd8-f29d-4738-8c08-f481457e47ac   # check its nodes are ready
+---
+CONTEXT=your-context
+```
+````
+
+- **The path** is that block, plus every block that depends on it, directly or through each other, in any note. A block checking the learner's cluster that `depends-on` the one above is part of it.
+- **Blocks both ways need**, such as installing an operator once there's a cluster, depend on the usual way's blocks, not the alternative's. They're not part of the path, so they run whichever way is taken.
+- **Choosing.** Run all takes the usual way, and skips the whole alternative path. The learner chooses the alternative by running its first block with ▶ (or saving it, for a file block). From then on the path is *in use*: the blocks it replaces show *Not needed*, can't run, and Run all skips them, and follows the alternative instead.
+- **Standing in.** Once every block of the path has succeeded (manual ones aside), the blocks it replaces count as done, so blocks that depend on them can run.
+- **One way at a time.** While a block of the usual way has a result, the alternative path is blocked, with *reset … first*, and the other way round. To switch, reset the way that's in use.
+- **Reset.** A block of the path can't be reset while blocks that depend on the ones it replaces still have results, so Reset all, from the bottom up, undoes the shared steps first, then the path. The usual way's blocks have no results, so there's nothing to undo there.
+
+The alternative's first block says what it's instead of, until it's run. Give each block of the path a revert if it changes anything, as for any block.
 
 ### Saved results
 

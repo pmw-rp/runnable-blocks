@@ -341,6 +341,51 @@ P.results.delete(P.keyFor('demo.md', dD));
 eq('a dependency below the block is flagged', P.prerequisiteState('demo.md', above).waiting[0].below, true);
 eq('no dependencies, never blocked', P.prerequisiteState('demo.md', dA).blocked, false);
 
+// Alternative paths: "use your own cluster" (choose it, then check it) instead of creating one and checking it
+{
+  const id = (n) => `${n}${n}${n}${n}${n}${n}${n}${n}-${n}${n}${n}${n}-4${n}${n}${n}-8${n}${n}${n}-${n.repeat(12)}`;
+  const block = (i, header, code) => '```run\nid: ' + id(i) + '\n' + header + '---\n' + code + '\n```\n';
+  const altNote = block('1', 'expect: all set\n', 'echo all set')
+    + block('2', 'depends-on: ' + id('1') + '\ninstead-of:\n  - ' + id('4') + '\n  - ' + id('5') + '\nrevert: echo undo\n', 'use my cluster')
+    + block('3', 'depends-on: ' + id('2') + '\nexpect: ready\n', 'echo ready')
+    + block('4', 'depends-on: ' + id('1') + '\nrevert: kind delete cluster\n', 'kind create cluster')
+    + block('5', 'depends-on: ' + id('4') + '\nexpect: 5 nodes ready\n', 'echo 5 nodes ready')
+    + block('6', 'depends-on:\n  - ' + id('4') + '\n  - ' + id('5') + '\n', 'helm install');
+  const [tools, own, ownCheck, create, ready, install] = P.metasFor(altNote, 'alt.md').map(({ meta }) => meta);
+  const ok = { done: true, exitCode: 0, stdout: '' };
+  const set = (m, res) => P.results.set(P.keyFor('alt.md', m), res);
+  const reasons = (m) => P.prerequisiteState('alt.md', m).waiting.map((w) => w.type + ':' + w.reason);
+  set(tools, Object.assign({}, ok, { stdout: 'all set' }));
+  eq('instead-of is parsed', own.insteadOf, [id('4'), id('5')]);
+  eq('a non-UUID instead-of warns', P.makeMeta('run', 'instead-of: kind\n---\nx').warnings.length, 1);
+  eq('the path is the alternative and what depends on it', P.alternativePath({ path: 'alt.md', meta: own }).map((st) => st.meta.id), [id('2'), id('3')]);
+  eq('both blocks of the path know their start', [own, ownCheck, install].map((m) => P.pathsThrough('alt.md', m).length), [1, 1, 0]);
+  eq('before either way is chosen, both can start', [reasons(own), reasons(create)], [[], []]);
+  eq('Run all leaves the alternative path alone', [P.onUnusedPath('alt.md', own), P.onUnusedPath('alt.md', ownCheck), P.onUnusedPath('alt.md', create)], [true, true, false]);
+  set(own, ok);
+  eq('once the path is in use, the blocks it replaces are not needed', [reasons(create)[0], reasons(ready)[0]], ['replaced:in use', 'replaced:in use']);
+  eq('and the rest of the path is no longer skipped', P.onUnusedPath('alt.md', ownCheck), false);
+  eq('but they only count as done once the whole path has succeeded', reasons(install), ['block:not run yet', 'block:not run yet']);
+  set(ownCheck, Object.assign({}, ok, { stdout: 'ready' }));
+  eq('then the next steps can run', reasons(install), []);
+  eq('the replaced block names the alternative', P.prerequisiteState('alt.md', create).waiting[0].label, 'bash: use my cluster');
+  set(install, ok);
+  eq('a block on the path can\'t be reset while the next steps have results', P.resetBlocker('alt.md', ownCheck), 'reset bash: helm install first, which depend on it');
+  P.results.delete(P.keyFor('alt.md', install));
+  set(ownCheck, Object.assign({}, ok, { stdout: 'not ready' }));
+  eq('a path with a failed block still holds the other way', reasons(create), ['replaced:in use']);
+  eq('but stands in for nothing', reasons(install), ['block:not run yet', 'block:not run yet']);
+  P.results.delete(P.keyFor('alt.md', ownCheck));
+  P.results.delete(P.keyFor('alt.md', own));
+  set(create, ok);
+  eq('once the usual way has run, the whole alternative path is blocked', [reasons(own), reasons(ownCheck)], [['other-path:already run'], ['other-path:already run', 'block:not run yet']]);
+  eq('and says to reset it first', P.prerequisiteState('alt.md', own).waiting[0].summary, 'reset line 24 (bash: kind create cluster) first: this is instead of it');
+  eq('the usual way unblocks its next step as before', reasons(ready), []);
+  eq('an alternative found from the block it replaces', P.alternativesFor(create).map((a) => a.meta.id), [id('2')]);
+  [tools, own, ownCheck, create, ready, install].forEach((m) => P.results.delete(P.keyFor('alt.md', m)));
+  P.noteIndex.delete('alt.md');
+}
+
 // Prerequisites: requires
 const reqMeta = (header) => Object.assign(P.makeMeta('run', 'id: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\nlang: bash\neditable: true\n' + header + '---\nkubectl get pods'), { lineStart: 99 });
 const rq = reqMeta('requires:\n  - ' + dA.id + '\n  - block: ' + dC.id + '\n    message: Create the topic\n  - command: command -v kubectl\n    message: Install kubectl\n  - matches: ^kubectl scale\n    flags: m\n    message: Use kubectl scale\n');

@@ -36,6 +36,7 @@ the code
 | `idempotent` | both | `false`: it runs once, until it's reset. For anything that fails or does harm a second time. |
 | `depends-on` | both | An id, or a list of ids, that must have passed first. Same note or any other. |
 | `requires` | both | A list of prerequisites (below). |
+| `instead-of` | both | Ids of blocks this one is an alternative to: it starts an alternative path (below). |
 | `revert` | both | Undoes the block: a command, or `lang` and `run`. Reset runs it. A file block's revert gets `$FILE`. |
 | `expect` | both | Run: `output`, `md5`, `command-md5`. File: `content`, `md5`. |
 | `check` | file | A command run against the written file (`$FILE`), with its own `expect: { output, md5 }`. It passes on exit 0 if it has no expect. |
@@ -89,6 +90,16 @@ With `T` as a pattern for the start of the command's line (`docker\s+kill\b`, `r
 | The line is exactly a shape, e.g. `docker kill rp-node-N` | `^(?![\s\S]*(?:^\|\n)(?![ \t]*docker\s+kill\s+rp-node-\d+[ \t]*(?:\n\|$))[ \t]*T)` |
 
 (The `\|` in the table are plain `|` in the note.) Since the box can now run more than once, drop `idempotent: false` and guard anything dangerous to repeat with a `command:` prerequisite instead, for example "all three brokers are running" before a kill. Generate the patterns from one template rather than writing them by hand, quote every `message` in YAML (a message with `: ` in it isn't valid YAML otherwise), and test each with `scripts/check.js … --patterns`, including a box with only exploring commands in it.
+
+## Alternative paths (`instead-of:`)
+
+For a choice of ways at the start of a course, such as creating a kind cluster or using the learner's own, write the usual way, then the alternative, and put `instead-of:` (the ids of the usual way's blocks it replaces) on the alternative's first block. The blocks that depend on it, directly or through each other, are the rest of its path. Steps both ways need depend on the usual way's blocks, never the alternative's, so they stay off the path.
+
+- Run all takes the usual way. The learner chooses the alternative by running (or saving) its first block; then the replaced blocks show *Not needed*, Run all follows the alternative, and once the whole path has passed, the replaced blocks count as done for their dependents.
+- Only one way can be in use: the other is blocked until it's reset.
+- Make both ways end in the same state, so everything after works on either. For Kubernetes, that means one context name every later block uses (`--context NAME`): the kind way names its context with `kubectl config set-context NAME --cluster kind-X --user kind-X`, and the own-cluster way points the same name at the learner's context. Their reverts delete that context, and reverts guard with `kubectl config get-contexts NAME`, not `kind get clusters`.
+- On a learner's own cluster, check before changing anything: reachable, admin rights (`kubectl auth can-i create customresourcedefinitions`), a default StorageClass, and none of the namespaces or operators the lab installs, since Reset would delete them. `Shadow Linking/1 Setup.md` is the model.
+- Test both: `scripts/run.js NOTE` takes the usual way, and `--choose ID` the alternative (with `--answer` for its editable blocks). A throwaway kind cluster makes a good "own cluster".
 
 ## Reverts
 
