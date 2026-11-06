@@ -951,8 +951,9 @@ class RunBlock extends MarkdownRenderChild {
       });
     };
     const reason = (text) => this.waitEl.createSpan({ cls: 'run-block-waiting-reason', text: ` (${text})` });
-    // Replaced by an alternative that's in use: the block isn't needed, rather than blocked.
-    const replaced = waiting.find((w) => w.type === 'replaced');
+    // The other way is in use (this block is replaced, or on the path not taken): it isn't needed,
+    // rather than blocked.
+    const replaced = waiting.find((w) => w.type === 'replaced' || w.type === 'other-path');
     if (replaced) {
       setIcon(this.waitEl.createSpan({ cls: 'run-block-waiting-icon' }), 'split');
       this.waitEl.createSpan({ text: "Not needed: you're using " });
@@ -976,11 +977,6 @@ class RunBlock extends MarkdownRenderChild {
         if (w.message) this.waitEl.createSpan({ text: `${w.message} ` });
         this.waitEl.createEl('code', { text: w.label });
         reason(w.message ? w.reason : `has to succeed: ${w.reason}`);
-      } else if (w.type === 'other-path') {
-        this.waitEl.createSpan({ text: 'reset ' });
-        blockRef(w);
-        reason(`line ${w.line}, ${w.reason}`);
-        this.waitEl.createSpan({ text: ' first: this is instead of it' });
       } else {
         this.waitEl.createSpan({ text: w.message ? `${w.message}: run ` : 'run ' });
         blockRef(w);
@@ -1463,8 +1459,8 @@ class RunnableBlocksPlugin extends Plugin {
         if (verdict.status === 'fail') reason = 'failed its checks';
         else if (verdict.status !== 'pass' && verdict.status !== 'ok') reason = verdict.label.toLowerCase();
       }
-      // An alternative path that has succeeded, every block of it, stands in for the blocks it replaces.
-      if (reason && this.alternativesFor(dep).some((start) => this.pathSucceeded(this.alternativePath(start)))) reason = null;
+      // An alternative path that has succeeded stands in for the blocks it replaces.
+      if (reason && this.alternativesFor(dep).some((start) => this.pathSucceeded(start))) reason = null;
       if (reason) {
         const label = blockLabel(dep);
         waiting.push({
@@ -2152,7 +2148,7 @@ class RunnableBlocksPlugin extends Plugin {
   activeDependents(sourcePath, meta) {
     if (!meta.id) return [];
     const ids = [meta.id];
-    for (const start of this.pathsThrough(sourcePath, meta)) ids.push(...start.meta.insteadOf);
+    for (const start of this.pathsThrough(sourcePath, meta)) if (start.path === sourcePath) ids.push(...start.meta.insteadOf);
     const out = [];
     for (const [path, metas] of this.noteIndex) {
       for (const m of metas) {
@@ -2194,14 +2190,17 @@ class RunnableBlocksPlugin extends Plugin {
     return steps;
   }
 
-  // A path is in use once any of its blocks has run, or is running, and has succeeded once all of
-  // them have, apart from manual ones.
+  // A path is in use once any of its blocks has run, or is running. It has succeeded, and stands in
+  // for the blocks it replaces, once its blocks in the note it starts in have all succeeded, apart
+  // from manual ones. Its blocks in other notes, such as a lesson's step only needed on this path,
+  // run later, so they don't count.
   pathInUse(steps) {
     return steps.some(({ path, meta }) => this.resultFor(path, meta));
   }
 
-  pathSucceeded(steps) {
-    return steps.every(({ path, meta }) => meta.manual || succeeded(meta, this.resultFor(path, meta)));
+  pathSucceeded(start) {
+    return this.alternativePath(start).filter(({ path }) => path === start.path)
+      .every(({ path, meta }) => meta.manual || succeeded(meta, this.resultFor(path, meta)));
   }
 
   // The starts of the alternative paths this block is on: itself, if it has instead-of, or the

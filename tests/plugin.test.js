@@ -383,6 +383,24 @@ eq('no dependencies, never blocked', P.prerequisiteState('demo.md', dA).blocked,
   eq('the usual way unblocks its next step as before', reasons(ready), []);
   eq('an alternative found from the block it replaces', P.alternativesFor(create).map((a) => a.meta.id), [id('2')]);
   [tools, own, ownCheck, create, ready, install].forEach((m) => P.results.delete(P.keyFor('alt.md', m)));
+
+  // A lesson's step only needed on the alternative path, such as a port forward to your own cluster
+  const [forward] = P.metasFor(block('7', 'depends-on:\n  - ' + id('3') + '\n  - ' + id('6') + '\nrevert: kill it\n', 'kubectl port-forward'), 'lesson.md').map(({ meta }) => meta);
+  eq('a block in another note that depends on the path is on it', P.pathsThrough('lesson.md', forward).map((st) => st.meta.id), [id('2')]);
+  eq('Run all skips it while the path is not in use', P.onUnusedPath('lesson.md', forward), true);
+  set(own, ok);
+  set(ownCheck, Object.assign({}, ok, { stdout: 'ready' }));
+  eq('the path stands in without it, since it is in another note', reasons(install), []);
+  set(install, ok);
+  P.results.set(P.keyFor('lesson.md', forward), ok);
+  eq('and it can be reset while the setup still has results', P.resetBlocker('lesson.md', forward), null);
+  [own, ownCheck, install].forEach((m) => P.results.delete(P.keyFor('alt.md', m)));
+  P.results.delete(P.keyFor('lesson.md', forward));
+  set(create, ok);
+  eq('on the usual way, it is not needed', P.prerequisiteState('lesson.md', forward).waiting[0].type, 'other-path');
+  P.results.delete(P.keyFor('alt.md', create));
+  P.results.delete(P.keyFor('alt.md', tools));
+  P.noteIndex.delete('lesson.md');
   P.noteIndex.delete('alt.md');
 }
 

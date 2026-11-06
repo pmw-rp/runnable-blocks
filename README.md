@@ -244,11 +244,11 @@ CONTEXT=your-context
 ```
 ````
 
-- **The path** is that block, plus every block that depends on it, directly or through each other, in any note. A block checking the learner's cluster that `depends-on` the one above is part of it.
+- **The path** is that block, plus every block that depends on it, directly or through each other, in any note. A block checking the learner's cluster that `depends-on` the one above is part of it, and so is a lesson's step that only that way needs, such as a port forward to the learner's own cluster.
 - **Blocks both ways need**, such as installing an operator once there's a cluster, depend on the usual way's blocks, not the alternative's. They're not part of the path, so they run whichever way is taken.
 - **Choosing.** Run all takes the usual way, and skips the whole alternative path. The learner chooses the alternative by running its first block with ▶ (or saving it, for a file block). From then on the path is *in use*: the blocks it replaces show *Not needed*, can't run, and Run all skips them, and follows the alternative instead.
-- **Standing in.** Once every block of the path has succeeded (manual ones aside), the blocks it replaces count as done, so blocks that depend on them can run.
-- **One way at a time.** While a block of the usual way has a result, the alternative path is blocked, with *reset … first*, and the other way round. To switch, reset the way that's in use.
+- **Standing in.** Once every block of the path in the note it starts in has succeeded (manual ones aside), the blocks it replaces count as done, so blocks that depend on them can run. Its blocks in other notes come later, so they don't count.
+- **One way at a time.** While a block of the usual way has a result, the alternative path's blocks show *Not needed*, and can't run, and the other way round. To switch, reset the way that's in use.
 - **Reset.** A block of the path can't be reset while blocks that depend on the ones it replaces still have results, so Reset all, from the bottom up, undoes the shared steps first, then the path. The usual way's blocks have no results, so there's nothing to undo there.
 
 The alternative's first block says what it's instead of, until it's run. Give each block of the path a revert if it changes anything, as for any block.
