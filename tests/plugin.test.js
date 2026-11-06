@@ -38,15 +38,16 @@ function parseYaml(text) {
       const key = m[1].trim();
       const rest = m[2].trim();
       i++;
-      if (rest === '|' || rest === '|-') {
+      const lit = rest.match(/^\|(\d)?(-)?$/);
+      if (lit) {
         const body = [];
-        let bi = null;
+        let bi = lit[1] ? ind + Number(lit[1]) : null;
         while (i < lines.length && (!lines[i].trim() || indentOf(lines[i]) > ind)) {
           if (lines[i].trim() && bi === null) bi = indentOf(lines[i]);
           body.push(lines[i].slice(bi || 0));
           i++;
         }
-        obj[key] = body.join('\n').replace(/\n*$/, rest === '|-' ? '' : '\n');
+        obj[key] = body.join('\n').replace(/\n*$/, lit[2] ? '' : '\n');
       } else if (rest === '' || rest.startsWith('#')) {
         const next = lines.slice(i).find((x) => x.trim() && !x.trim().startsWith('#'));
         if (next && next.trim().startsWith('- ') && indentOf(next) >= ind) {
@@ -123,7 +124,7 @@ class FileSystemAdapter { getBasePath() { return '/vault'; } }
 const req = (m) => (m === 'obsidian' ? { Plugin: Stub, PluginSettingTab: Stub, MarkdownRenderChild: Stub, TextFileView: Stub, TFile, MarkdownView, FileSystemAdapter, parseYaml, stringifyYaml, Notice: class { setMessage() {} hide() {} } }
   : m === 'crypto' ? fakeCrypto : m === 'path' ? fakePath : m === 'fs' ? fakeFs : {});
 const api = new Function('require', 'module', 'setTimeout', 'clearTimeout', 'window', src + `
-return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
+return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withLearner, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
 
 const out = [];
 const eq = (name, a, b) => {
@@ -213,7 +214,22 @@ eq('broken header warns', P.makeMeta('run', 'lang: bash\nexpect: { bad\n---\nx')
 eq('non-header text before --- does not warn', P.makeMeta('run', 'echo a: b {\n---\nx').warnings, []);
 
 const lm = P.makeMeta('file', 'id: f1\npath: a.yaml\neditable: true\nlearner: |-\n  mine\n---\nauthor');
-eq('learner content is current, original kept', [lm.code, lm.original, lm.learner], ['mine', 'author', 'mine']);
+eq('an older note\'s learner entry is still read', [lm.code, lm.original, lm.learner], ['mine', 'author', 'mine']);
+const om = P.makeMeta('file', 'id: f1\npath: a.yaml\neditable: true\noriginal: |2-\n    indented\n  author\n---\nmine');
+eq('the learner\'s code is below ---, the original in the header', [om.code, om.original, om.learner], ['mine', '  indented\nauthor', 'mine']);
+eq('an unedited block has no learner code', P.makeMeta('run', 'editable: true\n---\necho x').learner, null);
+const edit = (src, code) => api.withLearner(P.makeMeta('run', src), src, code);
+eq('editing moves the original into the header', edit('id: a\neditable: true\n---\n# your command', 'echo hi\necho there'),
+  'id: a\neditable: true\noriginal: |2-\n  # your command\n---\necho hi\necho there');
+eq('the original keeps leading spaces and blank lines', edit('editable: true\n---\n  a\n\nb', 'x'), 'editable: true\noriginal: |2-\n    a\n\n  b\n---\nx');
+eq('an empty original is kept too', edit('editable: true\n---\n', 'x'), 'editable: true\noriginal: ""\n---\nx');
+eq('editing again keeps the original', edit('editable: true\noriginal: |2-\n  orig\n---\nfirst', 'second'), 'editable: true\noriginal: |2-\n  orig\n---\nsecond');
+eq('back to the original removes the entry', edit('editable: true\noriginal: |2-\n  orig\n---\nfirst', 'orig'), 'editable: true\n---\norig');
+eq('no change leaves the body alone', edit('editable: true\noriginal: |2-\n  orig\n---\nfirst', 'first'), 'editable: true\noriginal: |2-\n  orig\n---\nfirst');
+eq('an older learner entry is converted', edit('editable: true\nlearner: mine\n---\norig', 'mine'), 'editable: true\noriginal: |2-\n  orig\n---\nmine');
+eq('an older learner entry back to the original is removed', edit('editable: true\nlearner: mine\n---\norig', 'orig'), 'editable: true\n---\norig');
+const rt = edit('editable: true\n---\n  - a: 1\n---\nb', 'x');
+eq('the original round-trips through the header', P.makeMeta('run', rt).original, '  - a: 1\n---\nb');
 eq('learner ignored unless editable', P.makeMeta('file', 'path: a\nlearner: x\n---\ny').code, 'y');
 
 // Evaluation
@@ -510,7 +526,8 @@ gated.then((res) => {
     return P.persistLearner('n.md', fm());
   }).then(() => {
     eq('leaving the editor saves the answer as learner', [fm().learner, fm().code], ['echo answer', 'echo answer']);
-    eq('and keeps the original below ---', fm().original, '# your command here');
+    eq('and keeps the original in the header', [fm().original, fm().stored], ['# your command here', '# your command here']);
+    eq('with the answer below ---', disk.split('---\n')[1], 'echo answer\n```\n');
     P.settleDraft(P.keyFor('n.md', fm()), fm());
     eq('the saved answer counts as edited, so it can be reset', P.resetBlocker('n.md', fm()), null);
     P.setDraft(P.keyFor('n.md', fm()), fm(), 'echo better answer');

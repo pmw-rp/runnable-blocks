@@ -117,7 +117,7 @@ Tell the user before building a lab. It uses Docker and minutes of time, and it 
 
 ### 8. Hand it over
 
-- Make sure no note contains `result:` or `learner:` entries from testing, unless the user wants them. They're the learner's progress, not course content.
+- Make sure no note contains `result:`, `original:` or `learner:` entries from testing, unless the user wants them. They're the learner's progress, not course content. A block with `original:` has a learner's answer below `---`: Reset it, or move the original back below `---` and delete the entry.
 - Lab output (`lab/`) is ignored by the vault's `.gitignore`. Don't commit generated files, keys or certificates.
 - Summarise for the user: the pages, what each teaches, what was tested and how, what can't be undone, and anything you couldn't test.
 - Commit only when asked.

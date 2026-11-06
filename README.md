@@ -38,6 +38,7 @@ The header can also open with its own `---`, like note frontmatter. Only the fir
 | `expect.command-md5` | Expected MD5 of the code that ran. |
 | `id` | Required: the block's UUID. Added the first time the block runs if it's missing (see [Block ids](#block-ids)). |
 | `result` | The block's last result, written by the plugin (see [Saved results](#saved-results)). You don't write it yourself. |
+| `original` | In an editable block the learner has changed, the author's code, while the learner's is below `---` (see [Editable blocks](#editable-blocks)). Written by the plugin. |
 
 `expect: <text>` on its own is shorthand for `expect.output`.
 
@@ -63,7 +64,7 @@ service:
 | `path` | Where to write the file, relative to the working directory. Parent folders are created as needed. |
 | `lang` | Syntax highlighting. Defaults to the file extension. |
 | `editable` | `true` lets the learner edit the file; saving writes it to disk and checks it (see below). |
-| `learner` | The learner's current version of the file. Written by the plugin; you don't need to set it. |
+| `original` | The author's version, once the learner has edited the file: their version is below `---`. Written by the plugin; you don't need to set it. |
 | `timeout`, `id`, `depends-on`, `requires`, `revert`, `idempotent` | As for `run` blocks. A file block's revert gets `$FILE`, as its check does. |
 | `expect.content` | Exact expected file content. |
 | `expect.md5` | Expected MD5 of the file content. |
@@ -79,11 +80,11 @@ Shorthands: `expect: <text>` means `expect.content`, `check: <command>` means `c
 Unknown keys inside `expect` or `check` show a warning on the block. The old `check.md5` points you to `check.expect.md5`.
 
 **Editable file blocks:**
-- The content below `---` stays the author's original. The learner's version is stored in the header as `learner:`, so it survives restarts. The note is updated when the editor loses focus, because updating it redraws the block.
+- The learner's version is stored in the note, below `---`, and the author's original moves into the header as `original:` (see [Editable blocks](#editable-blocks)). The note is updated when the editor loses focus, because updating it redraws the block.
 - Typing doesn't write the file. The learner writes it, and runs its checks, with the save button or Shift+Enter, as they'd run a `run` block. Until then the footer says the file is *not saved to disk yet*.
 - If the file changes on disk some other way (a `run` block's `sed -i`, another editor), the block shows the new content and stores it in the note.
-- Opening a note creates a missing file, unless Reset deleted it this session. If the file on disk differs from the block, the disk version is taken as the learner's latest. The file is then checked as it is, so wrong files show red straight away. That runs the block's `check` command; turn off **Check when a note opens** if you'd rather it only ran after an edit.
-- **Reset** goes back to the original, removes `learner:` and rewrites the file.
+- Opening a note creates a missing file, unless Reset deleted it this session. If the file on disk differs from the block, the disk version is taken as the learner's latest. With **Check when a note opens** turned on, the file is then checked as it is, so wrong files show red straight away. It's off by default, because a block checked that way looks as if it ran by itself: then a block with a `check` command is only checked when the learner saves it. Blocks checked only by `expect` are still checked on open, since that runs no commands.
+- **Reset** puts the original back below `---`, removes `original:` and rewrites the file.
 
 **Writing:**
 - Every file block has a save button that writes the file and runs its checks. In an editable block's editor, Shift+Enter does the same.
@@ -130,7 +131,20 @@ Readers can see the header, including `expect` answers, in source mode. Use the 
 With `editable: true`, the block shows a text editor instead of highlighted code:
 
 - **Shift+Enter** or **Cmd/Ctrl+Enter** runs the block (or writes the file). **Tab** indents.
-- Your version is saved into the block's header, as `learner:`, when you leave the editor and when the block runs. The block's content, below `---`, stays the author's original, so it's never lost. The rendered view hides the header, so you see your version in the editor.
+- Your version is saved into the note when you leave the editor and when the block runs. It goes below `---`, where the author's code was, so the note reads as what you ran, even without the plugin. The author's original moves into the header, as `original:`, so it's never lost:
+  ````
+  ```run
+  id: 3f2b8c1e-9d4a-4c7e-8b1f-2a6d5e9c0b47
+  editable: true
+  original: |2-
+    # your command here
+  ---
+  rpk topic create orders -p 3
+  ```
+  ````
+  The `|2-` writes it line for line, leading spaces included. Once your version is the same as the original again, `original:` goes, and the block is as the author wrote it.
+- Notes saved by older versions of the plugin keep the learner's version in the header instead, as `learner:`, with the original below `---`. They're still read, and converted the next time the block is saved.
+- **If you write a course, edit it with no answers in it.** With an answer in a block, the code below `---` is the answer, and changing it changes the answer, not the course. Reset the block first, or edit the original in `original:`.
 - Once you edit a block, an *edited* marker appears.
 - **Reset** puts the original back, in the editor and the note, as well as clearing the result and running the block's revert if it has one. Before the block has run, that's all it does, so it's also how a learner starts an answer over.
 - "Run all" uses your version.
@@ -232,7 +246,7 @@ result:
 - **`file` blocks:** the content's MD5, and the check's exit code and output MD5. Check output is never shown, so it isn't saved either.
 
 **When it's saved:**
-- when a block you ran finishes: ▶, the write button, Shift+Enter or Run all. An editable block's code is saved with it, as `learner:`, so the note says what produced the result.
+- when a block you ran finishes: ▶, the write button, Shift+Enter or Run all. An editable block's code is saved with it, below `---`, so the note says what produced the result.
 - for an editable file block, when you leave its editor, together with your edits
 - not for checks that run automatically when a note opens, so opening a note still doesn't change it
 
@@ -320,7 +334,7 @@ Obsidian's file explorer hides files it can't open. To see these, turn on **Sett
 - **Extra PATH entries**: Obsidian doesn't load your shell profile. `/opt/homebrew/bin` and `/usr/local/bin` are added by default.
 - **Working directory**: the note's folder (default) or the vault root.
 - **Timeout**: 30 s by default.
-- **Check when a note opens**: on by default. Runs editable file blocks' check commands, and command prerequisites, without a click.
+- **Check when a note opens**: off by default. Runs editable file blocks' check commands, and command prerequisites, without a click.
 - **Allow file blocks to write outside the vault**: off by default.
 - **Open these files in the code editor**: the file extensions that open in the plugin's editor (see [Code files](#code-files)). Reload the plugin after changing it.
 
@@ -341,6 +355,12 @@ tests/run.sh
 ```
 
 This runs `tests/plugin.test.js` with macOS's built-in JavaScript (`osascript -l JavaScript`), so it needs no Node or npm. Small stand-ins replace Obsidian's API, Node's `crypto`, `fs` and `path`, and YAML. The tests cover parsing blocks and headers, editing headers, evaluating checks, block ids and file-block syncing, partly against `example.md`. They don't cover rendering in Obsidian. The script prints any failures and a summary, and exits non-zero if anything failed.
+
+```sh
+node tests/filter-roundtrip.js [path/to/strip-progress.py]
+```
+
+This checks a course vault's git clean filter against the plugin: it edits blocks as a learner would, with awkward originals (leading spaces, blank lines, `---` lines, callouts), runs each note through the filter, and checks the result is the note as the author wrote it. It needs Node, and the `write-course` scripts' js-yaml (`npm install --prefix .claude/skills/write-course/scripts`).
 
 ## Security
 

@@ -42,7 +42,7 @@ const DEFAULT_SETTINGS = {
   timeoutSeconds: 30,
   defaultLang: 'bash',
   allowOutsideVault: false,
-  checkOnOpen: true,
+  checkOnOpen: false,
   // Files with these extensions open in the plugin's code editor, rather than outside Obsidian.
   codeExtensions: 'yaml, yml, json, avsc, sh, bash, zsh, py, go, js, ts, toml, ini, cfg, conf, properties, xml, sql, rb, txt, log',
 };
@@ -74,7 +74,7 @@ const MAX_HIGHLIGHT = 200000;
 
 // Settings a block's YAML header may use. A header only counts as one if it uses at least one of
 // these, so a file whose own content has a "---" line isn't mistaken for a header.
-const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'idempotent', 'timeout', 'depends-on', 'requires', 'revert', 'expect', 'check', 'learner', 'result']);
+const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'idempotent', 'timeout', 'depends-on', 'requires', 'revert', 'expect', 'check', 'original', 'learner', 'result']);
 
 // Saved output is cut to this many characters per stream; checks then compare hashes instead.
 const MAX_SAVED_OUTPUT = 10000;
@@ -141,7 +141,7 @@ function parseBlocks(text) {
 function splitHeader(source) {
   const lines = source.replace(/\r\n/g, '\n').split('\n');
   const none = { header: null, unknown: [], error: null, lines, start: 0, sep: -1, content: normalize(source) };
-  // Only an unindented "---" counts, so a "---" inside an indented YAML value (e.g. learner: |) doesn't.
+  // Only an unindented "---" counts, so a "---" inside an indented YAML value (e.g. original: |) doesn't.
   const isSep = (line) => /^---[ \t]*$/.test(line);
   const start = isSep(lines[0]) ? 1 : 0;
   const sep = lines.findIndex((line, i) => i >= start && isSep(line));
@@ -233,11 +233,13 @@ function setHeaderValue(source, keyPath, value, kind) {
   return lines.join('\n');
 }
 
-// Sets a top-level header entry that may span several lines (like learner: |), or removes it when
+// Sets a top-level header entry that may span several lines (like original: |), or removes it when
 // `value` is null. The new entry goes at the end of the header; other lines are left as written.
-function setHeaderEntry(source, key, value) {
+// `literal` writes a string as a literal block, line for line, whatever YAML would choose.
+function setHeaderEntry(source, key, value, literal) {
   const parts = splitHeader(source);
-  const entry = value == null ? [] : stringifyYaml({ [key]: value }).replace(/\s+$/, '').split('\n');
+  const entry = value == null ? [] : literal ? literalEntry(key, String(value))
+    : stringifyYaml({ [key]: value }).replace(/\s+$/, '').split('\n');
   if (!parts.header) return entry.length ? [...entry, '---', ...parts.lines].join('\n') : source;
   const lines = parts.lines.slice();
   const keyRe = new RegExp(`^${escapeRe(key)}\\s*:`);
@@ -256,11 +258,31 @@ function setHeaderEntry(source, key, value) {
   return lines.join('\n');
 }
 
-// A block body with its `learner:` entry set to `code`, or removed when `code` is the original.
+// A header entry as a literal block, keeping every line exactly. The indentation indicator ("2")
+// lets lines start with spaces, and "-" drops the final newline, which notes don't keep anyway.
+// Git's clean filter (strip-progress.py in the vault) reads entries in this shape.
+function literalEntry(key, value) {
+  if (value === '') return [`${key}: ""`];
+  return [`${key}: |2-`, ...value.split('\n').map((line) => (line ? `  ${line}` : ''))];
+}
+
+// A block body with the content below its "---" replaced by `content`.
+function setContent(source, content) {
+  const parts = splitHeader(source);
+  if (!parts.header) return content;
+  return [...parts.lines.slice(0, parts.sep + 1), ...(content === '' ? [] : content.split('\n'))].join('\n');
+}
+
+// A block body whose code is `code`. The code always goes below "---", so the note reads as what
+// was run, even without the plugin. While it differs from the author's original, the original is
+// kept in the header, as `original:`, and it moves back below "---" once the code is the original
+// again. An older note's `learner:` entry (the answer in the header) is converted.
 // `now` is the block as the note says now, not as it rendered: an earlier save may have changed it.
 function withLearner(now, body, code) {
-  const want = code === now.original ? null : code;
-  return now.learner === want ? body : setHeaderEntry(body, 'learner', want);
+  const keep = code === now.original ? null : now.original;
+  if (now.code === code && now.stored === keep && now.legacy === null) return body;
+  const updated = setHeaderEntry(setHeaderEntry(body, 'learner', null), 'original', keep, true);
+  return setContent(updated, code);
 }
 
 // Writes `body` back into `block` within the note's text, restoring any callout/list prefix.
@@ -691,8 +713,8 @@ class RunBlock extends MarkdownRenderChild {
         ta.setSelectionRange(refocus.start, refocus.end);
       });
     }
-    // The learner's version is saved into the note's `learner:` entry, keeping the original below
-    // "---". Saving re-renders the block, so it's done once the learner moves on, not as they type.
+    // The learner's version is saved into the note below "---", with the original kept as
+    // `original:`. Saving re-renders the block, so it's done once the learner moves on, not as they type.
     // A block that has re-rendered since isn't saved: the new one has the learner's text, and this
     // one's meta is out of date.
     ta.addEventListener('blur', () => {
@@ -1159,10 +1181,15 @@ class RunnableBlocksPlugin extends Plugin {
     const text = (v) => (v == null ? null : normalize(String(v)));
     const hash = (v) => (v == null ? null : String(v).trim().toLowerCase());
     const warnings = parts.unknown.map((k) => `Unknown setting "${k}" in this block's header.`);
-    // An editable block's learner version lives in the header, as `learner:`. The content below
-    // "---" stays the author's original, so Reset and Restore can always bring it back.
-    const learner = h.editable === true && h.learner != null ? normalize(String(h.learner)) : null;
-    const code = learner !== null ? learner : parts.content;
+    // Once a learner edits an editable block, their code is below "---", and the author's original
+    // is kept in the header, as `original:`, so Reset can always bring it back. Older notes have
+    // it the other way round: the answer in `learner:`, and the original below "---".
+    const stored = h.editable === true && h.original != null ? normalize(String(h.original)) : null;
+    const legacy = h.editable === true && stored === null && h.learner != null ? normalize(String(h.learner)) : null;
+    const original = stored !== null ? stored : parts.content;
+    const code = legacy !== null ? legacy : parts.content;
+    // The learner's code, or null for a block that hasn't been edited.
+    const learner = stored !== null ? parts.content : legacy;
     if (parts.error) warnings.push(parts.error);
     if (h.id != null && !UUID_RE.test(String(h.id))) {
       warnings.push(`This block's id, "${h.id}", isn't a UUID. It gets a new one the first time it runs.`);
@@ -1199,8 +1226,10 @@ class RunnableBlocksPlugin extends Plugin {
       revert: null,
       timeout: Number(h.timeout) || null,
       source: normalize(source),
-      original: parts.content,
+      original,
       learner,
+      stored,
+      legacy,
       code,
       cmdHash: md5(code),
       warnings,
@@ -1618,8 +1647,8 @@ class RunnableBlocksPlugin extends Plugin {
     if (this.drafts.get(key) === meta.code) this.drafts.delete(key);
   }
 
-  // Saves an editable block's current code into the note's `learner:` header entry, or removes the
-  // entry when the code is back to the original. The original, below "---", is never changed.
+  // Saves an editable block's current code into the note, below "---", keeping the author's original
+  // as `original:` in the header, or putting the original back when the code is the same as it.
   // `code` defaults to the block's current code; pass the editor's text when saving from an editor.
   async persistLearner(sourcePath, meta, code = this.currentCode(this.keyFor(sourcePath, meta), meta)) {
     // The block gets its id in the same edit, so the note is only re-rendered once.
@@ -2358,4 +2387,4 @@ class RunnableBlocksSettingTab extends PluginSettingTab {
 module.exports = RunnableBlocksPlugin;
 // For scripts that check and run notes outside Obsidian, such as the write-course skill's. Obsidian
 // only uses the class itself.
-Object.assign(module.exports, { evaluate, normalize, md5, blockLabel });
+Object.assign(module.exports, { evaluate, normalize, md5, blockLabel, withLearner });

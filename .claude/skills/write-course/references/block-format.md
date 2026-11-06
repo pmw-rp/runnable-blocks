@@ -20,7 +20,7 @@ the code
 - The fence is ` ```run ` or ` ```file `. The header is YAML, ended by a line `---`, and the code follows it.
 - **Every block needs an `id:`**, a lowercase UUID, unique across the whole vault. Generate them with `uuidgen | tr A-Z a-z`, one per block. Never reuse or copy one: dependencies find blocks by id across notes.
 - Blocks work inside callouts too. Prefix every line with `> `.
-- `result:` and `learner:` entries are written by the plugin as the learner works. Don't write them, and remove any left over from testing.
+- `result:`, `original:` and `learner:` entries are written by the plugin as the learner works. Don't write them, and remove any left over from testing. When a learner edits an editable block, their answer goes below `---` and the author's code moves into `original:`, so in a block with `original:`, the code below `---` isn't the course's.
 - Quote YAML values containing `: ` or ` #`. Use single quotes for regular expressions, so backslashes stay as they are. Use `|` for multi-line values.
 
 ## Header keys
