@@ -33,6 +33,8 @@ The header can also open with its own `---`, like note frontmatter. Only the fir
 | `depends-on` | The id of a block above, or in another note, or a list of ids, that must have run successfully first (see [Prerequisites](#prerequisites)). |
 | `requires` | What has to be true before the block can run: blocks that have run, commands that succeed, patterns the code matches (see [Prerequisites](#prerequisites)). |
 | `instead-of` | The id of a block, or a list of ids, that this block is an alternative to. It starts an alternative path, such as using your own cluster instead of creating one (see [Alternative paths](#alternative-paths)). Works on file blocks too. |
+| `packages` | In a `python`, `js` or `go` block, the libraries its code needs, installed for it the first time it runs (see [Packages](#packages)). |
+| `env` | Environment variables for the block's code and its revert: a map of names to values. |
 | `revert` | A command that undoes what the block did: a string, or `lang` and `run`. **Reset** runs it (see [Reset and revert](#reset-and-revert)). |
 | `expect.output` | Exact expected stdout. |
 | `expect.md5` | Expected MD5 of stdout. |
@@ -253,6 +255,39 @@ CONTEXT=your-context
 
 The alternative's first block says what it's instead of, until it's run. Give each block of the path a revert if it changes anything, as for any block.
 
+### Packages
+
+A `python`, `js` or `go` block can list the libraries its code imports, so the code runs as it stands, with no project to set up first:
+
+````markdown
+```run
+lang: python
+packages: [confluent-kafka==2.16.1]
+env:
+  BROKERS: 127.0.0.1:9092
+---
+import os
+from confluent_kafka import Producer
+p = Producer({"bootstrap.servers": os.environ["BROKERS"]})
+```
+````
+
+| `lang` | A package is | Installed with | Runs with |
+|---|---|---|---|
+| `python`, `py` | `name==1.2.3` | `pip`, in a virtualenv | the virtualenv's `python` |
+| `js`, `javascript`, `node` | `name@1.2.3` | `npm install`, in an npm project | `node`, with the code copied into the project, so `require` and `import` find the packages. Code with `import` runs as an ES module. |
+| `go` | `module/path@v1.2.3` | `go get`, in a Go module | built in the module, then run as a program, like other Go blocks |
+
+- **Each set of packages gets an environment of its own**, in `lab/.packages` next to the note, named after the language and the packages. The first block to need it makes it; every block with the same packages, in any order, shares it after that. Different sets don't interfere.
+- **The first run installs the packages**, which can take a while. The installer's progress goes to stderr, so it shows in red, and isn't part of the output checks compare. The block gets an extra five minutes for it, on top of its timeout.
+- **If installing fails**, the block fails with the installer's error, and the next run starts again from scratch.
+- **Pin versions**, so a course doesn't change under its learners when a library releases. The course-writing skill's `check.js` reports packages without one.
+- The block still runs in the note's folder, so it can read and write `lab/` as any other block does.
+- A revert in the block's own language gets its packages too. Every revert gets its `env`.
+- Nothing removes `lab/.packages` on its own: a course's teardown should delete it (`rm -rf lab/.packages`).
+
+`packages` needs `python3` (with its `venv` module), `npm` or `go` on the PATH. It doesn't use the **Interpreters** setting.
+
 ### Saved results
 
 When a block you ran finishes, its result is saved in its header as `result:`, which the rendered view hides. It's there after a restart, and it counts for `depends-on`.
@@ -357,6 +392,7 @@ Obsidian's file explorer hides files it can't open. To see these, turn on **Sett
 
 - **Interpreters**: one `lang = command` per line. `{file}` is replaced with a temp file holding the code. Built in: `bash`, `sh`, `zsh`, `python`/`py`, `js`/`javascript`/`node`, `ruby` and `go`.
   - **Go** blocks must be complete programs, with `package main` and `func main()`. They're compiled and then run, rather than run with `go run`, so the block gets the program's own exit code. (`go run` exits with 1 whenever the program fails.) The first run compiles the standard library and can take a few seconds; later runs use Go's build cache.
+  - Blocks with `packages` run in their environment instead, whatever the interpreter (see [Packages](#packages)).
 - **Default language**: used when a block has no `lang`.
 - **Extra PATH entries**: Obsidian doesn't load your shell profile. `/opt/homebrew/bin` and `/usr/local/bin` are added by default.
 - **Working directory**: the note's folder (default) or the vault root.

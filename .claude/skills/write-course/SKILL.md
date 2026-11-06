@@ -71,13 +71,14 @@ Follow the shape of `Shadow Linking/1 Setup.md`:
   Check that the lab can be *reached*, not that it's *healthy*. `rpk cluster health` exits 10 whenever the cluster reports itself unhealthy, which happens for a few seconds after ordinary operations, so as a prerequisite it blocks pages at random. Where a step needs a healthy cluster, wait for health inside that step instead.
 - **Chain the rest** with `depends-on`. A check that reads what an earlier step produced depends on that step.
 - **Decide, per block, whether it can be undone.** Some things genuinely can't: in Shadow Linking, a topic mirrored to the shadow cluster can't be deleted while the link exists, and recreating it on the source breaks the mirror. Those blocks are `idempotent: false` with no revert, and the page says so in a callout, with how to start over (usually: rebuild the lab). Don't write a revert that only half works. Test what's undoable against the real system rather than guessing.
+- **Client code that's a means, not the lesson** (a producer showing acks, a transaction), goes in a `python`, `js` or `go` run block with `packages:`, instead of a project to set up first. See "Client code" in `references/block-format.md`.
 - **Replication, propagation and eventual consistency need waits**, as in setup. Several checks in the existing courses passed by hand and failed under Run all.
 
 ### 5. Write the exercises
 
 An exercise is an `editable: true` block with a placeholder (`# your command here`) or a starting file, and a separate check block after it that verifies the *result*, not the command. Prefer checking observable state ("orders has 3 partitions on the shadow cluster") over checking the command text, so any correct answer passes.
 
-**When a wrong answer is hard to undo, gate the block with `matches:` patterns**, so it can't run until the command has the right shape. Add one pattern per mistake, each with its own `message`, because the learner sees every failing message as a to-do list.
+**Only when a wrong answer would do harm, or Reset or a later step relies on the command's shape, gate the block with `matches:` patterns**, so it can't run until the command has the right shape. Add one pattern per mistake, each with its own `message`, because the learner sees every failing message as a to-do list.
 
 Restrict only the command the task is about, not the whole block. Learners look around first: `docker ps` before `docker kill`, `--help` before writing the command, `rpk topic describe` to find a leader. So allow any other lines, even on their own before the task's command is written, and restrict the task's command only: at most once, on a line of its own, with the constraints applied to that line. `references/block-format.md` has the patterns. RP Streaming 101's exercises are the model. Then:
 

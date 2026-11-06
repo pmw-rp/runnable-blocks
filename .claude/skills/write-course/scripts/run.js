@@ -27,7 +27,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { newPlugin } = require('./plugin');
 const Plugin = require(process.env.RUNNABLE_BLOCKS_MAIN || path.resolve(__dirname, '../../../../main.js'));
-const { evaluate, normalize, md5, blockLabel } = Plugin;
+const { evaluate, normalize, md5, blockLabel, packageSetup } = Plugin;
 
 const args = process.argv.slice(2);
 const note = args[0] && !args[0].startsWith('--') ? args[0] : null;
@@ -49,16 +49,29 @@ const env = Object.assign({}, process.env, {
   OBSIDIAN_NOTE: path.resolve(note),
 });
 
-// Runs code with the interpreter for `lang`. Returns { stdout, stderr, exitCode, error }.
-function runCode(lang, code, timeoutSeconds, extraEnv) {
-  const interp = INTERPRETERS[lang];
-  if (!interp) return { stdout: '', stderr: '', exitCode: null, error: `No interpreter for "${lang}"` };
-  const tmp = path.join(os.tmpdir(), `course-run-${process.pid}-${Date.now()}.${EXT[lang] || 'sh'}`);
+// Runs code with the interpreter for `lang`, or, given packages, in their environment, as the
+// plugin does (installing them the first time, with extra time for it). Returns { stdout, stderr, exitCode, error }.
+function runCode(lang, code, timeoutSeconds, extraEnv, packages) {
+  let tmp, argv, cleanup = [];
+  if (packages && packages.length) {
+    let setup;
+    try { setup = packageSetup(lang, packages, cwd, code); } catch (e) { return { stdout: '', stderr: '', exitCode: null, error: e.message }; }
+    if (!fs.existsSync(setup.ready)) timeoutSeconds += 300;
+    tmp = path.join(os.tmpdir(), `course-run-${process.pid}-${Date.now()}.${setup.ext}`);
+    cleanup = setup.cleanup;
+    argv = ['bash', '-c', setup.command(tmp)];
+  } else {
+    const interp = INTERPRETERS[lang];
+    if (!interp) return { stdout: '', stderr: '', exitCode: null, error: `No interpreter for "${lang}"` };
+    tmp = path.join(os.tmpdir(), `course-run-${process.pid}-${Date.now()}.${EXT[lang] || 'sh'}`);
+    argv = [...interp, tmp];
+  }
   fs.writeFileSync(tmp, `${code}\n`);
-  const r = spawnSync(interp[0], [...interp.slice(1), tmp], {
+  const r = spawnSync(argv[0], argv.slice(1), {
     cwd, env: Object.assign({}, env, extraEnv), encoding: 'utf8', timeout: timeoutSeconds * 1000, maxBuffer: 64 * 1024 * 1024,
   });
-  fs.unlinkSync(tmp);
+  fs.rmSync(tmp, { force: true });
+  for (const p of cleanup) fs.rmSync(p, { recursive: true, force: true });
   const timedOut = r.error && r.error.code === 'ETIMEDOUT';
   return {
     stdout: r.stdout || '', stderr: r.stderr || '', exitCode: r.status,
@@ -110,7 +123,7 @@ if (flag('reverts')) {
     }
     console.log(`\n=== revert ${m.id.slice(0, 8)} ${blockLabel(m)}`);
     const extra = m.kind === 'file' ? { FILE: path.resolve(cwd, m.path) } : {};
-    const r = runCode(m.revert.lang, m.revert.run, m.timeout || 300, extra);
+    const r = runCode(m.revert.lang, m.revert.run, m.timeout || 300, Object.assign({}, m.env, extra), m.revert.lang === m.lang ? m.packages : null);
     show(r.stdout); show(r.stderr, 'stderr');
     const ok = !r.error && r.exitCode === 0;
     if (!ok) failed++;
@@ -179,7 +192,7 @@ for (const m of selected) {
       res.check = { stdout: c.stdout, exitCode: c.exitCode, error: c.error, timedOut: c.timedOut };
     }
   } else {
-    const r = runCode(m.lang, code, m.timeout || 30);
+    const r = runCode(m.lang, code, m.timeout || 30, m.env, m.packages);
     show(r.stdout); show(r.stderr, 'stderr');
     res = { done: true, stdout: r.stdout, exitCode: r.exitCode, error: r.error, timedOut: r.timedOut, outputHash: md5(normalize(r.stdout)), cmdHash: md5(code) };
   }

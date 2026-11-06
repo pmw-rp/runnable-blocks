@@ -52,6 +52,51 @@ const EXTENSIONS = {
   js: 'js', javascript: 'js', node: 'js', ruby: 'rb', ts: 'ts', go: 'go',
 };
 
+// Languages whose run blocks can list `packages:`, by the tool that installs them, and the extra
+// time a block gets the first time, while they're installed.
+const INSTALL_SECONDS = 300;
+const PACKAGE_LANGS = { python: 'python', py: 'python', js: 'node', javascript: 'node', node: 'node', go: 'go' };
+
+// How a block with `packages:` runs. Each set of packages gets an environment of its own, in
+// lab/.packages next to the note: a virtualenv, an npm project or a Go module, made the first
+// time a block needs it and reused after that. Returns { ready, ext, command(file), cleanup }: `ext`
+// is the extension for the file the block's code is written to, `command` the shell command that
+// installs the packages if need be and runs that file (Node and Go look for packages next to the
+// code, so it's copied into the environment first), and `cleanup` what to delete afterwards.
+function packageSetup(lang, packages, cwd, code) {
+  const kind = PACKAGE_LANGS[lang];
+  if (!kind) throw new Error(`"packages" works in python, js and go blocks, not ${lang}.`);
+  const dir = path.join(cwd, 'lab', '.packages', `${kind}-${md5(`${kind}\n${[...packages].sort().join('\n')}`).slice(0, 12)}`);
+  const ready = path.join(dir, '.ready');
+  const q = shellQuote;
+  const list = packages.map(q).join(' ');
+  const name = `run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const install = {
+    python: `python3 -m venv ${q(dir)} && ${q(path.join(dir, 'bin', 'python'))} -m pip install --quiet --disable-pip-version-check ${list}`,
+    node: `mkdir -p ${q(dir)} && cd ${q(dir)} && npm init -y >/dev/null && npm install --no-fund --no-audit --loglevel=error ${list}`,
+    go: `mkdir -p ${q(dir)} && cd ${q(dir)} && go mod init runblocks >/dev/null 2>&1 && go get ${list}`,
+  }[kind];
+  // Installing writes to stderr, so the block's output, and what it's checked against, is the code's own.
+  const prepare = `{ [ -f ${q(ready)} ] || { echo "Installing ${packages.join(', ').replace(/["$`\\]/g, '')}, the first time only…"; rm -rf ${q(dir)}; ( ${install} ) && touch ${q(ready)}; }; } >&2`;
+  if (kind === 'python') {
+    return { ready, ext: 'py', cleanup: [], command: (file) => `${prepare} && ${q(path.join(dir, 'bin', 'python'))} ${q(file)}` };
+  }
+  if (kind === 'node') {
+    // An ES module, with import, needs the .mjs extension in a project without "type": "module".
+    const ext = /^\s*import\s/m.test(code || '') ? 'mjs' : 'js';
+    const copy = path.join(dir, `${name}.${ext}`);
+    return { ready, ext, cleanup: [copy], command: (file) => `${prepare} && cp ${q(file)} ${q(copy)} && node ${q(copy)}` };
+  }
+  // Go builds a package, so each run gets a folder of its own in the module, and the binary runs in
+  // the note's folder, like any other block.
+  const pkg = path.join(dir, name);
+  const bin = path.join(pkg, 'run.bin');
+  return {
+    ready, ext: 'go', cleanup: [pkg],
+    command: (file) => `${prepare} && mkdir -p ${q(pkg)} && cp ${q(file)} ${q(path.join(pkg, 'main.go'))} && ( cd ${q(dir)} && go build -o ${q(bin)} ./${name} ) && ${q(bin)}`,
+  };
+}
+
 const FENCE_RE = /^((?:[ \t]*>)*[ \t]*)(`{3,}|~{3,})(.*)$/;
 
 // Prism's names for languages that blocks may call something else.
@@ -74,7 +119,7 @@ const MAX_HIGHLIGHT = 200000;
 
 // Settings a block's YAML header may use. A header only counts as one if it uses at least one of
 // these, so a file whose own content has a "---" line isn't mistaken for a header.
-const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'idempotent', 'timeout', 'depends-on', 'requires', 'instead-of', 'revert', 'expect', 'check', 'original', 'learner', 'result']);
+const HEADER_KEYS = new Set(['id', 'lang', 'path', 'editable', 'manual', 'idempotent', 'timeout', 'depends-on', 'requires', 'instead-of', 'packages', 'env', 'revert', 'expect', 'check', 'original', 'learner', 'result']);
 
 // Saved output is cut to this many characters per stream; checks then compare hashes instead.
 const MAX_SAVED_OUTPUT = 10000;
@@ -1244,6 +1289,23 @@ class RunnableBlocksPlugin extends Plugin {
       if (UUID_RE.test(id)) insteadOf.push(id);
       else warnings.push(`instead-of: "${v}" isn't a block id. Use the id (a UUID) of the block this replaces.`);
     }
+    // packages: what a python, js or go block's code imports, installed for it (see packageSetup).
+    // env: variables to set for the block's code and its revert.
+    const lang = String(h.lang || (kind === 'file' ? '' : this.settings.defaultLang)).toLowerCase();
+    const packages = h.packages == null ? [] : [].concat(h.packages).filter((p) => p != null && String(p).trim()).map((p) => String(p).trim());
+    if (packages.length && kind === 'file') warnings.push('"packages" is for run blocks: a file block only writes its file.');
+    else if (packages.length && !PACKAGE_LANGS[lang]) warnings.push(`"packages" works in python, js and go blocks, not ${lang}.`);
+    const env = {};
+    if (h.env != null && (typeof h.env !== 'object' || Array.isArray(h.env))) {
+      warnings.push('"env" needs a map of names to values, such as REDPANDA_BROKERS: 127.0.0.1:9092.');
+    } else if (h.env != null) {
+      for (const [k, v] of Object.entries(h.env)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) warnings.push(`env: "${k}" isn't a valid variable name.`);
+        else if (v != null && typeof v === 'object') warnings.push(`env: ${k} needs a single value, not a list or map.`);
+        else env[k] = v == null ? '' : String(v);
+      }
+      if (kind === 'file' && Object.keys(env).length) warnings.push('"env" is for run blocks: a file block only writes its file.');
+    }
     // A scalar is shorthand for the map's main key (`expect: 3`, `check: <command>`); unknown keys
     // inside the maps get a warning, with a pointer for likely mix-ups.
     const asMap = (value, keyPath, allowed) => {
@@ -1303,7 +1365,9 @@ class RunnableBlocksPlugin extends Plugin {
     }
     base.revert = this.parseRevert(h.revert, String(h.lang || this.settings.defaultLang), warnings);
     return Object.assign(base, {
-      lang: String(h.lang || this.settings.defaultLang).toLowerCase(),
+      lang,
+      packages: PACKAGE_LANGS[lang] ? packages : [],
+      env,
       expect: { output: text(expect.output), md5: hash(expect.md5), commandMd5: hash(expect['command-md5']) },
       check: null,
     });
@@ -2029,7 +2093,7 @@ class RunnableBlocksPlugin extends Plugin {
       else res.chunks.push({ stream, text });
       this.notify(key);
     };
-    const handle = this.spawnScript(meta.lang, code, this.getFile(sourcePath), this.timeoutFor(meta), append);
+    const handle = this.spawnScript(meta.lang, code, this.getFile(sourcePath), this.timeoutFor(meta), append, meta.env, meta.packages);
     const entry = { kill: (why) => handle.kill && handle.kill(why) };
     this.procs.set(key, entry);
     entry.promise = handle.promise.then((outcome) => {
@@ -2046,12 +2110,14 @@ class RunnableBlocksPlugin extends Plugin {
     return entry.promise;
   }
 
-  // Runs code with the interpreter configured for `lang`; onData(stream, text) receives output as it
-  // arrives. Returns { promise, kill }, where the promise resolves to { exitCode, error?, timedOut?, stopped? }.
-  spawnScript(lang, code, file, timeoutSeconds, onData, extraEnv) {
+  // Runs code with the interpreter configured for `lang`, or, given packages, in their environment
+  // (see packageSetup). onData(stream, text) receives output as it arrives. Returns { promise, kill },
+  // where the promise resolves to { exitCode, error?, timedOut?, stopped? }.
+  spawnScript(lang, code, file, timeoutSeconds, onData, extraEnv, packages) {
     const handle = {};
     handle.promise = new Promise((resolve) => {
       let tmp = null;
+      let cleanup = [];
       let timer = null;
       let reason = null;
       let settled = false;
@@ -2060,20 +2126,31 @@ class RunnableBlocksPlugin extends Plugin {
         settled = true;
         clearTimeout(timer);
         if (tmp) fs.unlink(tmp, () => {});
+        for (const p of cleanup) fs.rm(p, { recursive: true, force: true }, () => {});
         resolve(outcome);
       };
 
       let child;
       try {
-        const template = this.interpreters()[lang];
-        if (!template) throw new Error(`No interpreter configured for "${lang}". Add one in Settings → Runnable Blocks.`);
-        const ext = EXTENSIONS[lang] || lang;
-        tmp = path.join(os.tmpdir(), `obsidian-run-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
-        fs.writeFileSync(tmp, `${code}\n`);
-        const command = template.includes('{file}')
-          ? template.split('{file}').join(shellQuote(tmp))
-          : `${template} ${shellQuote(tmp)}`;
         const { base, cwd } = this.workingDir(file);
+        let command;
+        if (packages && packages.length) {
+          const setup = packageSetup(lang, packages, cwd, code);
+          // The first run installs the packages, which isn't counted against the block's timeout.
+          if (timeoutSeconds > 0 && !fs.existsSync(setup.ready)) timeoutSeconds += INSTALL_SECONDS;
+          tmp = path.join(os.tmpdir(), `obsidian-run-${Date.now()}-${Math.random().toString(36).slice(2)}.${setup.ext}`);
+          cleanup = setup.cleanup;
+          command = setup.command(tmp);
+        } else {
+          const template = this.interpreters()[lang];
+          if (!template) throw new Error(`No interpreter configured for "${lang}". Add one in Settings → Runnable Blocks.`);
+          const ext = EXTENSIONS[lang] || lang;
+          tmp = path.join(os.tmpdir(), `obsidian-run-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
+          command = template.includes('{file}')
+            ? template.split('{file}').join(shellQuote(tmp))
+            : `${template} ${shellQuote(tmp)}`;
+        }
+        fs.writeFileSync(tmp, `${code}\n`);
         const env = Object.assign({}, process.env, {
           PATH: [this.settings.extraPath, process.env.PATH].filter(Boolean).join(path.delimiter),
         }, extraEnv);
@@ -2282,12 +2359,14 @@ class RunnableBlocksPlugin extends Plugin {
         extraEnv = { FILE: this.resolveTarget(file, meta.path).target };
       } catch (e) { /* the command runs without FILE */ }
     }
+    // A revert in the block's own language can use its packages; every revert gets its env.
+    const packages = meta.revert.lang === meta.lang ? meta.packages : null;
     const handle = this.spawnScript(meta.revert.lang, meta.revert.run, file, this.timeoutFor(meta), (stream, text) => {
       const last = rev.chunks[rev.chunks.length - 1];
       if (last && last.stream === stream) last.text += text;
       else rev.chunks.push({ stream, text });
       this.notify(key);
-    }, extraEnv);
+    }, Object.assign({}, meta.env, extraEnv), packages);
     this.revertProcs.set(key, { kill: (why) => handle.kill && handle.kill(why) });
     const outcome = await handle.promise;
     this.revertProcs.delete(key);
@@ -2540,4 +2619,4 @@ class RunnableBlocksSettingTab extends PluginSettingTab {
 module.exports = RunnableBlocksPlugin;
 // For scripts that check and run notes outside Obsidian, such as the write-course skill's. Obsidian
 // only uses the class itself.
-Object.assign(module.exports, { evaluate, normalize, md5, blockLabel, withLearner });
+Object.assign(module.exports, { evaluate, normalize, md5, blockLabel, withLearner, packageSetup });

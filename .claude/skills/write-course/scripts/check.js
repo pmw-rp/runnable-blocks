@@ -40,7 +40,8 @@ for (const note of notes) {
     const first = (m.code.split('\n').find((l) => l.trim()) || '').slice(0, 50);
     const reqs = m.requires.map((r) => r.type).join(',');
     const flags = [m.idempotent ? '' : 'once', m.revert ? 'revert' : '', m.manual ? 'manual' : '', m.editable ? 'editable' : '',
-      reqs && `needs[${reqs}]`, m.insteadOf.length ? `instead-of[${m.insteadOf.length}]` : ''].filter(Boolean).join(' ');
+      reqs && `needs[${reqs}]`, m.insteadOf.length ? `instead-of[${m.insteadOf.length}]` : '',
+      m.packages && m.packages.length ? `packages[${m.packages.length}]` : ''].filter(Boolean).join(' ');
     console.log(`  line ${String(m.lineStart + 1).padStart(4)} ${m.kind.padEnd(4)} ${m.id ? m.id.slice(0, 8) : 'NO-ID   '} ${flags.padEnd(36)} ${first}`);
     for (const w of m.warnings) problem(w);
     if (!m.id) problem('no id: give it one with: uuidgen | tr A-Z a-z');
@@ -56,6 +57,11 @@ for (const note of notes) {
       if (!alt) problem(`instead-of ${id}, which isn't in any of these notes`);
       else if (alt.meta.id === m.id) problem('instead-of names the block itself');
       else if (alt.meta.insteadOf.length) problem(`instead-of ${id.slice(0, 8)}, which is itself an alternative`);
+    }
+    // A package without a version installs whatever is newest the first time a learner runs the block.
+    for (const p of m.packages || []) {
+      const pinned = { python: /==/, py: /==/, go: /@v\d/ }[m.lang] || /^@?[^@]+@\d/;
+      if (!pinned.test(p)) problem(`package ${p} has no version: pin it (${{ python: 'name==1.2.3', py: 'name==1.2.3', go: 'module/path@v1.2.3' }[m.lang] || 'name@1.2.3'})`);
     }
     // `kubectl config` only edits the kubeconfig, so it doesn't need one.
     if (m.revert && /\bkubectl\b(?!\s+config\b)(?![^\n]*--context)/.test(m.revert.run)) problem('revert runs kubectl without --context, so it acts on whatever cluster is current');

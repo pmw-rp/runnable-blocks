@@ -37,6 +37,8 @@ the code
 | `depends-on` | both | An id, or a list of ids, that must have passed first. Same note or any other. |
 | `requires` | both | A list of prerequisites (below). |
 | `instead-of` | both | Ids of blocks this one is an alternative to: it starts an alternative path (below). |
+| `packages` | run | In a `python`, `js` or `go` block: the libraries its code imports, pinned (`name==1.2.3`, `name@1.2.3`, `module@v1.2.3`). Installed the first time it runs (below). |
+| `env` | run | Environment variables for the code and its revert, as a map. |
 | `revert` | both | Undoes the block: a command, or `lang` and `run`. Reset runs it. A file block's revert gets `$FILE`. |
 | `expect` | both | Run: `output`, `md5`, `command-md5`. File: `content`, `md5`. |
 | `check` | file | A command run against the written file (`$FILE`), with its own `expect: { output, md5 }`. It passes on exit 0 if it has no expect. |
@@ -78,7 +80,7 @@ requires:
 
 ### Gating one command, and allowing the rest
 
-Let the learner run anything else in the box, such as `docker ps`, `--help` or `rpk … describe`, and run it on its own first, before writing the task's command at all. Restrict only the task's command: at most once, on a line of its own, and right. Every rule is written as "no line with the command breaks this", so a box without the command passes, and the learner can explore.
+Let the learner run anything else in the box, such as `docker ps`, `--help` or `rpk … describe`, and run it on its own first, before writing the task's command at all. Never require a line to be there: a rule like "the box must contain `rpk topic consume orders`" blocks the box until the whole answer is written, so the learner can't explore, or build it a line at a time. And only gate a command that would do harm, or whose shape a revert or a later step relies on (a revert that deletes `orders` needs the topic to be called `orders`). Otherwise leave the box open, with no `matches:` at all, and let the check after it say whether it worked. Restrict only the task's command: at most once, on a line of its own, and right. Every rule is written as "no line with the command breaks this", so a box without the command passes, and the learner can explore.
 
 With `T` as a pattern for the start of the command's line (`docker\s+kill\b`, `rpk\b.*\bsecurity\s+acl\s+create\b`), followed by `(?![^\n]*\s(?:-h|--help)(?:\s|$))` so a `--help` line doesn't count, and `L` for a line start, `(?:^|\n)[ \t]*`, none of them needing flags:
 
@@ -101,6 +103,25 @@ For a choice of ways at the start of a course, such as creating a kind cluster o
 - Make both ways end in the same state, so everything after works on either. For Kubernetes, that means one context name every later block uses (`--context NAME`): the kind way names its context with `kubectl config set-context NAME --cluster kind-X --user kind-X`, and the own-cluster way points the same name at the learner's context. Their reverts delete that context, and reverts guard with `kubectl config get-contexts NAME`, not `kind get clusters`.
 - On a learner's own cluster, check before changing anything: reachable, admin rights (`kubectl auth can-i create customresourcedefinitions`), a default StorageClass, and none of the namespaces or operators the lab installs, since Reset would delete them. `Shadow Linking/1 Setup.md` is the model.
 - Test both: `scripts/run.js NOTE` takes the usual way, and `--choose ID` the alternative (with `--answer` for its editable blocks). A throwaway kind cluster makes a good "own cluster".
+
+## Client code (`packages:`)
+
+For a snippet of client code, such as a producer showing one setting, write it as a `python`, `js` or `go` run block that lists its libraries, rather than a file block, a virtualenv step and a block that runs the file:
+
+```yaml
+lang: python
+packages: [confluent-kafka==2.16.1]
+timeout: 60
+```
+
+- The first run installs them, into `lab/.packages`, shared by every block with the same packages. It shows the installer's progress in red, and gets five extra minutes. Say so on the page.
+- Pin every package: `check.js` reports any without a version.
+- The code runs in the note's folder, so it can read `lab/` files, or run `bash lab/brokers.sh` for addresses that come from the lab.
+- A block's revert defaults to its own language. To undo with shell commands, use `revert: { lang: bash, run: … }`.
+- Delete `lab/.packages` in the setup page's teardown and in its last revert.
+- The tools check needs `python3 -c 'import venv'`, `npm` or `go`, for the languages the course uses.
+- It isn't for a process that keeps running: the block waits for it. Make the code finish (a consumer that stops when idle, a producer that exits mid-transaction to leave it open), or start it with `nohup` from a project the page builds.
+- When setting up the project is what the page teaches (a virtualenv, `npm init`, a `pom.xml`), keep the file blocks: the learner should see, and keep, the files. Getting Started with Redpanda's page 6 is like that; Producers and Consumers' Transactions page uses `packages:`.
 
 ## Reverts
 
@@ -129,5 +150,5 @@ revert: |
 - Certificates need every name clients will use (service names, `localhost`), or an upgrade later fails TLS.
 - `rpk cluster health` exits non-zero (10) while the cluster is unhealthy, not only when it's unreachable. Use `rpk cluster info` to test it's reachable, in prerequisites and in revert guards alike: a guard that tests health skips the undo whenever the cluster is briefly unhealthy. To wait for health, require several healthy readings in a row: just after a restart it flips back and forth.
 - A long-running process the learner would leave in a second terminal, such as a consumer, becomes a background block (`nohup`, a PID file, and a revert that kills it) with exercises around it.
-- A command that waits forever, such as a consumer without a count, times out in a block. Tell the learner to give it a stopping point, and gate it with a pattern if needed.
+- A command that waits forever, such as a consumer without a count, is fine in an exercise: the learner presses ■ to stop it, as they'd press Ctrl-C. Say so on the page, and don't gate it with a pattern. Mention that a stopping point (`-o :end`, `-n`) lets the lines after it run too, and give the block a `timeout` long enough to look at the output. Blocks the course itself runs, such as checks, must stop on their own.
 - Charts and images move. Pin versions, by digest where it matters, and check they're current when writing.

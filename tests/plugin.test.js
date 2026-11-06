@@ -123,8 +123,8 @@ const fakeFs = {
 class FileSystemAdapter { getBasePath() { return '/vault'; } }
 const req = (m) => (m === 'obsidian' ? { Plugin: Stub, PluginSettingTab: Stub, MarkdownRenderChild: Stub, TextFileView: Stub, TFile, MarkdownView, FileSystemAdapter, parseYaml, stringifyYaml, Notice: class { setMessage() {} hide() {} } }
   : m === 'crypto' ? fakeCrypto : m === 'path' ? fakePath : m === 'fs' ? fakeFs : {});
-const api = new Function('require', 'module', 'setTimeout', 'clearTimeout', 'window', src + `
-return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withLearner, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 });
+const api = new Function('require', 'module', 'setTimeout', 'clearTimeout', 'window', 'process', src + `
+return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withLearner, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, packageSetup, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 }, { platform: 'darwin', env: {} });
 
 const out = [];
 const eq = (name, a, b) => {
@@ -218,6 +218,29 @@ eq('an older note\'s learner entry is still read', [lm.code, lm.original, lm.lea
 const om = P.makeMeta('file', 'id: f1\npath: a.yaml\neditable: true\noriginal: |2-\n    indented\n  author\n---\nmine');
 eq('the learner\'s code is below ---, the original in the header', [om.code, om.original, om.learner], ['mine', '  indented\nauthor', 'mine']);
 eq('an unedited block has no learner code', P.makeMeta('run', 'editable: true\n---\necho x').learner, null);
+// packages: and env:
+const pm = P.makeMeta('run', 'lang: python\npackages:\n  - kafka-python==3.0.11\n  - requests==2.32.3\nenv:\n  REDPANDA_BROKERS: 127.0.0.1:9092\n  N: 3\n---\nprint(1)');
+eq('packages and env are read', [pm.packages, pm.env, pm.warnings], [['kafka-python==3.0.11', 'requests==2.32.3'], { REDPANDA_BROKERS: '127.0.0.1:9092', N: '3' }, []]);
+eq('one package can be a scalar', P.makeMeta('run', 'lang: go\npackages: github.com/google/uuid@v1.6.0\n---\nx').packages, ['github.com/google/uuid@v1.6.0']);
+eq('a block without them has none', [P.makeMeta('run', 'echo hi').packages, P.makeMeta('run', 'echo hi').env], [[], {}]);
+eq('packages in a bash block is a warning', P.makeMeta('run', 'packages: x\n---\necho hi').warnings, ['"packages" works in python, js and go blocks, not bash.']);
+eq('and in a file block', P.makeMeta('file', 'path: a.py\npackages: x\n---\nx').warnings, ['"packages" is for run blocks: a file block only writes its file.']);
+eq('env must be a map', P.makeMeta('run', 'env: x\n---\necho hi').warnings, ['"env" needs a map of names to values, such as REDPANDA_BROKERS: 127.0.0.1:9092.']);
+eq('env names must be valid', P.makeMeta('run', 'env:\n  A-B: 1\n---\necho hi').warnings, ['env: "A-B" isn\'t a valid variable name.']);
+const py = api.packageSetup('python', ['b==1', 'a==2'], '/v/c');
+const py2 = api.packageSetup('py', ['a==2', 'b==1'], '/v/c');
+eq('a set of packages has one environment, whatever the order', py.ready, py2.ready);
+eq('environments live in lab/.packages', /^\/v\/c\/lab\/\.packages\/python-[^/']{12}\/\.ready$/.test(py.ready), true);
+eq('python runs the venv\'s python, after installing if needed', /\[ -f '[\s\S]*\/\.ready' \] \|\| [\s\S]*pip install [\s\S]*'b==1' 'a==2'[\s\S]*\} >&2 && '\/v\/c\/lab\/\.packages\/python-[^/']+\/bin\/python' '\/tmp\/x\.py'$/.test(py.command('/tmp/x.py')), true);
+eq('installing goes to stderr', / >&2 && /.test(py.command('/tmp/x.py')), true);
+const js = api.packageSetup('js', ['lodash@4.17.21'], '/v/c', "const _ = require('lodash')");
+eq('node copies the code into the project, to find its packages', [js.ext, /&& cp '\/tmp\/x\.js' '([\s\S]*\/node-[^/']+\/run-[^']+\.js)' && node '\1'$/.test(js.command('/tmp/x.js')), js.cleanup.length], ['js', true, 1]);
+eq('node code with import is an ES module', api.packageSetup('node', ['lodash-es@4.17.21'], '/v/c', "import x from 'lodash-es'").ext, 'mjs');
+const go = api.packageSetup('go', ['github.com/google/uuid@v1.6.0'], '/v/c');
+eq('go builds in a folder of the module, and runs in the note\'s folder', /go get 'github\.com\/google\/uuid@v1\.6\.0'[\s\S]* && mkdir -p '([\s\S]*\/go-[^/']+\/(run-[^']+))' && cp '\/tmp\/x\.go' '\1\/main\.go' && \( cd '[\s\S]*\/go-[^/']+' && go build -o '\1\/run\.bin' \.\/\2 \) && '\1\/run\.bin'$/.test(go.command('/tmp/x.go')), true);
+let threw = null;
+try { api.packageSetup('ruby', ['x'], '/v/c'); } catch (e) { threw = e.message; }
+eq('other languages are refused', threw, '"packages" works in python, js and go blocks, not ruby.');
 const edit = (src, code) => api.withLearner(P.makeMeta('run', src), src, code);
 eq('editing moves the original into the header', edit('id: a\neditable: true\n---\n# your command', 'echo hi\necho there'),
   'id: a\neditable: true\noriginal: |2-\n  # your command\n---\necho hi\necho there');
