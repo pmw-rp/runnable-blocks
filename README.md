@@ -4,7 +4,51 @@ An Obsidian plugin that turns fenced code blocks into notebook cells. A `run` bl
 
 Desktop only, because it runs local processes.
 
-To see what it can do, open [`tutorial/Tutorial.md`](tutorial/Tutorial.md) in a vault with the plugin, and run its blocks.
+To see what it can do, install it, then open [`tutorial/Tutorial.md`](tutorial/Tutorial.md) in your vault and run its blocks.
+
+## Install
+
+You need the Obsidian desktop app, version 1.4 or later. The plugin is developed on macOS, and should work on Linux. It isn't in Obsidian's community plugin directory, so install it in one of these ways.
+
+The [repository](https://github.com/pmw-rp/runnable-blocks) is private, so ask Paul Wilkinson for access to it first.
+
+### With BRAT (recommended)
+
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) installs plugins straight from GitHub, and keeps them up to date.
+
+1. In Obsidian, open **Settings → Community plugins**. If it asks, choose **Turn on community plugins**.
+2. Choose **Browse**, search for **BRAT**, then **Install** and **Enable** it.
+3. Open the command palette (⌘P, or Ctrl+P), type **BRAT**, and run its command to **add a beta plugin**.
+4. Enter `https://github.com/pmw-rp/runnable-blocks` as the repository, and add it.
+5. Back in **Settings → Community plugins**, enable **Runnable Blocks**.
+
+Because the repository is private, BRAT needs a GitHub personal access token to read it. Before step 3, [create one](https://github.com/settings/personal-access-tokens/new) with read-only access to **Contents** of `pmw-rp/runnable-blocks`, and paste it into BRAT's settings, under its personal access token.
+
+BRAT checks for new versions when Obsidian starts.
+
+### By hand
+
+1. From the [latest release](https://github.com/pmw-rp/runnable-blocks/releases/latest), download `main.js`, `manifest.json` and `styles.css`.
+2. In your vault's folder, make the folder `.obsidian/plugins/runnable-blocks`, and put the three files in it. `.obsidian` is hidden: on macOS, press ⌘⇧. in Finder to show it.
+3. In Obsidian, open **Settings → Community plugins**, turn on community plugins if it asks, and enable **Runnable Blocks**. If it isn't listed, press the refresh button next to **Installed plugins**.
+
+To update, replace the three files with the new release's, then turn the plugin off and on again.
+
+### From a clone
+
+```sh
+git clone https://github.com/pmw-rp/runnable-blocks.git
+cd runnable-blocks
+./install.sh --tutorial "/path/to/your vault"
+```
+
+This copies the plugin into the vault, and the tutorial too, as `Runnable Blocks Tutorial/Tutorial.md`. Then enable **Runnable Blocks** in **Settings → Community plugins**. To update, `git pull` and run `./install.sh` again. `./install.sh --link` links the vault's plugin folder to the clone instead, for working on the plugin (see [Install for development](#install-for-development)).
+
+### Then
+
+- **Try the tutorial:** open it, and run its blocks with ▶, or the whole note with **Runnable Blocks: Run all blocks in current note** in the command palette. It needs bash, `python3` and `node`. If you installed by hand or with BRAT, copy [`tutorial/Tutorial.md`](tutorial/Tutorial.md) into your vault first.
+- **If a block can't find a command** you have, such as `kubectl` or `docker`: Obsidian doesn't read your shell profile, so add the folder the command is in (`which kubectl` says) to **Settings → Runnable Blocks → Extra PATH entries**. `/opt/homebrew/bin` and `/usr/local/bin` are there already.
+- **Only open notes you trust** with the plugin on: blocks run with your permissions (see [Security](#security)).
 
 ## Writing blocks
 
@@ -431,7 +475,7 @@ Scripts also get the `OBSIDIAN_VAULT` and `OBSIDIAN_NOTE` environment variables 
 ln -s "$PWD" "/path/to/vault/.obsidian/plugins/runnable-blocks"
 ```
 
-Then enable **Runnable Blocks** under Settings → Community plugins, and open `tutorial/Tutorial.md` (copy the `tutorial` folder into the vault) to try it out. It works through every feature, with a block to run for each. `example.md` is a shorter demo, which the tests also read. The plugin is plain JavaScript with no build step. Edit `main.js` and reload the plugin.
+Or run `./install.sh --link "/path/to/vault"`, which does the same. Then enable **Runnable Blocks** under Settings → Community plugins, and open `tutorial/Tutorial.md` (copy it into the vault, or use `./install.sh --tutorial`) to try it out. It works through every feature, with a block to run for each. `example.md` is a shorter demo, which the tests also read. The plugin is plain JavaScript with no build step. Edit `main.js` and reload the plugin.
 
 ## Tests
 
@@ -451,6 +495,14 @@ This checks a course vault's git clean filter against the plugin: it edits block
 
 `tutorial/Tutorial.md` is hard-linked into the Learning Path vault, as `Tutorial/Tutorial.md`: one file, in both places. Running it there writes results into it, so this repository strips them on commit with the vault's clean filter (see `.gitattributes`), and ignores `tutorial/lab/`. Anything that replaces the file rather than writing into it, such as `git checkout`, `git stash` or `git reset --hard`, breaks the link without saying so; `tests/run.sh` warns when it has. To relink it, copy over whichever copy has the changes you want, then `ln -f tutorial/Tutorial.md "<vault>/Tutorial/Tutorial.md"`.
 
+## Releasing
+
+1. Bump `version` in `manifest.json`, and add it to `versions.json`, with the oldest Obsidian version it works with.
+2. Commit, and push.
+3. Run `./release.sh`. It runs the tests, then makes a GitHub release tagged with the version (with no `v`, as Obsidian and BRAT expect), with `main.js`, `manifest.json` and `styles.css` attached. It needs the GitHub CLI, `gh`, logged in.
+
+BRAT picks the new version up from there.
+
 ## Security
 
-`run` blocks only run when you click ▶ or use **Run all**. Editable file blocks run their `check` commands as you edit them, and when their note opens (unless you turn that setting off). Everything runs with your full user permissions, so read notes from other people before opening them with this plugin on.
+`run` blocks only run when you press ▶ or use **Run all**. A file block's `check` runs when you save the file. With **Check when a note opens** turned on (it's off by default), checks and `requires` commands also run when a note opens. Everything runs with your full user permissions, so read notes from other people, in source mode, before running their blocks.

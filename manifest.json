@@ -3,7 +3,7 @@
   "name": "Runnable Blocks",
   "version": "0.1.0",
   "minAppVersion": "1.4.0",
-  "description": "Notebook-style runnable code blocks with a play button, inline output, and MD5 checks of commands and output.",
-  "author": "pmw",
+  "description": "Runnable code and file blocks in your notes, with checks, prerequisites, undo and exercises: for hands-on courses and runbooks.",
+  "author": "Paul Wilkinson",
   "isDesktopOnly": true
 }
