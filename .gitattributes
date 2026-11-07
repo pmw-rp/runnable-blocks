@@ -1,0 +1,7 @@
+# tutorial/Tutorial.md is hard-linked into the Learning Path vault, where running it writes progress
+# (result:, original:, chosen:) into the note. The vault's clean filter keeps that out of commits.
+# Enable it in a clone with:
+#   git config filter.strip-progress.clean "python3 '/path/to/vault/.gitfilters/strip-progress.py'"
+#   git config filter.strip-progress.smudge cat
+#   git config filter.strip-progress.required true
+tutorial/*.md filter=strip-progress

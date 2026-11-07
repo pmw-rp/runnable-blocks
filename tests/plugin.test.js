@@ -501,6 +501,15 @@ eq('no dependencies, never blocked', P.prerequisiteState('demo.md', dA).blocked,
   P.chooserIndex.delete('choose.md');
 }
 
+// The tutorial: every block parses, has its own id, and its chooser finds its ways
+const tutorial = read(root + '/tutorial/Tutorial.md');
+const tMetas = P.metasFor(tutorial, 'tutorial/Tutorial.md').map(({ meta }) => meta);
+eq('tutorial blocks have no warnings', tMetas.flatMap((m) => m.warnings), []);
+eq('tutorial blocks all have ids, all different', new Set(tMetas.map((m) => m.id).filter(Boolean)).size, tMetas.length);
+eq('tutorial chooser has three ways', P.chooserWays(api.parseChoosers(tutorial)[0].forId, 'tutorial/Tutorial.md').length, 3);
+P.noteIndex.delete('tutorial/Tutorial.md');
+P.chooserIndex.delete('tutorial/Tutorial.md');
+
 // Prerequisites: requires
 const reqMeta = (header) => Object.assign(P.makeMeta('run', 'id: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee\nlang: bash\neditable: true\n' + header + '---\nkubectl get pods'), { lineStart: 99 });
 const rq = reqMeta('requires:\n  - ' + dA.id + '\n  - block: ' + dC.id + '\n    message: Create the topic\n  - command: command -v kubectl\n    message: Install kubectl\n  - matches: ^kubectl scale\n    flags: m\n    message: Use kubectl scale\n');

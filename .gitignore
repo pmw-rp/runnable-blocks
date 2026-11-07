@@ -2,3 +2,6 @@
 
 # Obsidian saves the plugin's settings here, because the vault's plugin folder links to this one
 data.json
+
+# What running the tutorial writes next to it
+tutorial/lab/

@@ -4,6 +4,8 @@ An Obsidian plugin that turns fenced code blocks into notebook cells. A `run` bl
 
 Desktop only, because it runs local processes.
 
+To see what it can do, open [`tutorial/Tutorial.md`](tutorial/Tutorial.md) in a vault with the plugin, and run its blocks.
+
 ## Writing blocks
 
 Each block starts with a YAML header with its settings. A `---` line ends the header, and the code or file content goes below it. The header is hidden when the block is rendered.
@@ -429,7 +431,7 @@ Scripts also get the `OBSIDIAN_VAULT` and `OBSIDIAN_NOTE` environment variables 
 ln -s "$PWD" "/path/to/vault/.obsidian/plugins/runnable-blocks"
 ```
 
-Then enable **Runnable Blocks** under Settings → Community plugins, and open `example.md` (copy it into the vault) to try it out. The plugin is plain JavaScript with no build step. Edit `main.js` and reload the plugin.
+Then enable **Runnable Blocks** under Settings → Community plugins, and open `tutorial/Tutorial.md` (copy the `tutorial` folder into the vault) to try it out. It works through every feature, with a block to run for each. `example.md` is a shorter demo, which the tests also read. The plugin is plain JavaScript with no build step. Edit `main.js` and reload the plugin.
 
 ## Tests
 
@@ -444,6 +446,10 @@ node tests/filter-roundtrip.js [path/to/strip-progress.py]
 ```
 
 This checks a course vault's git clean filter against the plugin: it edits blocks as a learner would, with awkward originals (leading spaces, blank lines, `---` lines, callouts), runs each note through the filter, and checks the result is the note as the author wrote it. It needs Node, and the `write-course` scripts' js-yaml (`npm install --prefix .claude/skills/write-course/scripts`).
+
+### The tutorial in the Learning Path vault
+
+`tutorial/Tutorial.md` is hard-linked into the Learning Path vault, as `Tutorial/Tutorial.md`: one file, in both places. Running it there writes results into it, so this repository strips them on commit with the vault's clean filter (see `.gitattributes`), and ignores `tutorial/lab/`. Anything that replaces the file rather than writing into it, such as `git checkout`, `git stash` or `git reset --hard`, breaks the link without saying so; `tests/run.sh` warns when it has. To relink it, copy over whichever copy has the changes you want, then `ln -f tutorial/Tutorial.md "<vault>/Tutorial/Tutorial.md"`.
 
 ## Security
 
