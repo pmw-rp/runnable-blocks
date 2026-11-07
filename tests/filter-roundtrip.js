@@ -3,7 +3,7 @@
 // Usage: node tests/filter-roundtrip.js [path to strip-progress.py]
 const { execFileSync } = require('child_process');
 const { newPlugin } = require('../.claude/skills/write-course/scripts/plugin.js');
-const { withLearner } = require('../main.js');
+const { withLearner, setChosen } = require('../main.js');
 const FILTER = process.argv[2] || '/Users/pmw/Documents/LearningPath/Learning Path/.gitfilters/strip-progress.py';
 const P = newPlugin();
 const originals = [
@@ -33,6 +33,15 @@ for (const prefix of ['', '> ', '> > ']) for (const orig of originals) for (cons
   const reset = withLearner(back, edited, meta.original);
   if (P.makeMeta('run', reset).stored !== null || P.makeMeta('run', reset).code !== meta.original) problems.push('reset left the original in the header');
   if (problems.length) { fails++; console.log(`FAIL prefix=${JSON.stringify(prefix)} orig=${JSON.stringify(orig)} answer=${JSON.stringify(answer)}\n  ${problems.join('\n  ')}`); }
+}
+// A chooser: the way picked, which the plugin writes in, comes out again.
+for (const prefix of ['', '> ']) {
+  const FOR = '00000000-0000-4000-8000-000000000001';
+  const author = `# Note\n\n${['```choose', `for: ${FOR}`, 'labels:', `  ${FOR}: kind`, '```'].map((l) => prefix + l).join('\n')}\n\nAfter.\n`;
+  const picked = setChosen(author, FOR, '00000000-0000-4000-8000-000000000002');
+  const got = execFileSync('python3', [FILTER], { input: picked }).toString();
+  n++;
+  if (picked === author || got !== author) { fails++; console.log(`FAIL chooser prefix=${JSON.stringify(prefix)}: filter gave\n${got}\nwanted\n${author}`); }
 }
 console.log(`${n - fails}/${n} round trips ok`);
 process.exitCode = fails ? 1 : 0;

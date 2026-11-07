@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const { indexNotes } = require('./plugin');
+const { parseChoosers } = require(process.env.RUNNABLE_BLOCKS_MAIN || path.resolve(__dirname, '../../../../main.js'));
 
 const args = process.argv.slice(2);
 const p = args.indexOf('--patterns');
@@ -65,6 +66,15 @@ for (const note of notes) {
     }
     // `kubectl config` only edits the kubeconfig, so it doesn't need one.
     if (m.revert && /\bkubectl\b(?!\s+config\b)(?![^\n]*--context)/.test(m.revert.run)) problem('revert runs kubectl without --context, so it acts on whatever cluster is current');
+  }
+  // Choosers: each names a block with alternatives to choose between.
+  for (const c of parseChoosers(fs.readFileSync(note, 'utf8'))) {
+    const ways = c.forId ? P.chooserWays(c.forId, note) : [];
+    console.log(`  line ${String(c.line + 1).padStart(4)} choose for ${c.forId ? c.forId.slice(0, 8) : '?'}: ${ways.length} ways`);
+    for (const w of c.warnings) problem(w);
+    if (c.forId && !ways.length) problem(`the chooser is for ${c.forId}, which isn't in any of these notes`);
+    else if (c.forId && ways.length < 2) problem(`the chooser is for ${c.forId.slice(0, 8)}, but no block is instead-of it`);
+    for (const id of Object.keys(c.labels)) if (!ways.some((w) => w.id === id)) problem(`the chooser has a label for ${id}, which isn't one of its ways`);
   }
 }
 console.log(`\n${problems} problem(s)`);

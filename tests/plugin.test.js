@@ -124,7 +124,7 @@ class FileSystemAdapter { getBasePath() { return '/vault'; } }
 const req = (m) => (m === 'obsidian' ? { Plugin: Stub, PluginSettingTab: Stub, MarkdownRenderChild: Stub, TextFileView: Stub, TFile, MarkdownView, FileSystemAdapter, parseYaml, stringifyYaml, Notice: class { setMessage() {} hide() {} } }
   : m === 'crypto' ? fakeCrypto : m === 'path' ? fakePath : m === 'fs' ? fakeFs : {});
 const api = new Function('require', 'module', 'setTimeout', 'clearTimeout', 'window', 'process', src + `
-return { parseBlocks, splitHeader, setHeaderValue, setHeaderEntry, withLearner, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, packageSetup, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 }, { platform: 'darwin', env: {} });
+return { parseBlocks, parseChoosers, setChosen, noteHeadings, sectionAround, splitHeader, setHeaderValue, setHeaderEntry, withLearner, savedResult, loadResult, replaceBody, normalize, evaluate, hasChecks, codeExtensions, packageSetup, CODE_LANGS, DEFAULT_SETTINGS, Plugin: RunnableBlocksPlugin };`)(req, { exports: {} }, () => 0, () => {}, { requestAnimationFrame: () => 0 }, { platform: 'darwin', env: {} });
 
 const out = [];
 const eq = (name, a, b) => {
@@ -425,6 +425,80 @@ eq('no dependencies, never blocked', P.prerequisiteState('demo.md', dA).blocked,
   P.results.delete(P.keyFor('alt.md', tools));
   P.noteIndex.delete('lesson.md');
   P.noteIndex.delete('alt.md');
+
+  // Two alternatives to the same blocks: create the cluster with k3s, or use your own, instead of kind
+  const threeWays = block('1', 'revert: kind delete cluster\n', 'kind create cluster')
+    + block('2', 'instead-of: ' + id('1') + '\nrevert: k3sd delete\n', 'k3sd create')
+    + block('3', 'depends-on: ' + id('2') + '\n', 'echo k3s ready')
+    + block('4', 'instead-of: ' + id('1') + '\n', 'use my cluster')
+    + block('5', 'depends-on: ' + id('1') + '\n', 'echo ready');
+  const [kind, k3s, k3sCheck, mine, common] = P.metasFor(threeWays, 'ways.md').map(({ meta }) => meta);
+  const why = (m) => P.prerequisiteState('ways.md', m).waiting.map((w) => w.type + ':' + w.reason);
+  eq('the alternatives to the same blocks are siblings', P.siblingAlternatives({ path: 'ways.md', meta: k3s }).map((a) => a.meta.id), [id('4')]);
+  eq('before any way is chosen, each can start', [why(kind), why(k3s), why(mine)], [[], [], []]);
+  P.results.set(P.keyFor('ways.md', k3s), ok);
+  eq('once one alternative is in use, the other is not needed', why(mine), ['replaced:in use']);
+  eq('and names the one in use', P.prerequisiteState('ways.md', mine).waiting[0].label, 'bash: k3sd create');
+  eq('nor is the usual way', why(kind), ['replaced:in use']);
+  eq('the rest of the path in use can run', why(k3sCheck), []);
+  P.results.set(P.keyFor('ways.md', k3sCheck), ok);
+  eq('it stands in for the usual way', why(common), []);
+  eq('Run all still skips the other alternative', P.onUnusedPath('ways.md', mine), true);
+  [k3s, k3sCheck].forEach((m) => P.results.delete(P.keyFor('ways.md', m)));
+  eq('reset it, and the other can start again', why(mine), []);
+  P.noteIndex.delete('ways.md');
+
+  // A chooser: pick a way, and the other ways' sections are hidden, and their blocks aren't needed
+  const chooseNote = '# Cluster\n\n## 2. The cluster\n\nPick one.\n\n```choose\nfor: ' + id('1') + '\nprompt: How will you get a cluster?\nlabels:\n  ' + id('4') + ': Your own\n```\n\n'
+    + '### 2a. Create a kind cluster\n\nText.\n\n' + block('1', 'revert: kind delete cluster\n', '# not a heading\nkind create cluster')
+    + '\n### 2b. Or create a k3s cluster\n\n' + block('2', 'instead-of: ' + id('1') + '\n', 'k3sd create')
+    + block('3', 'depends-on: ' + id('2') + '\n', 'echo k3s ready')
+    + '\n### 2c. Or use your own cluster\n\n' + block('4', 'instead-of: ' + id('1') + '\n', 'use my cluster')
+    + '\n### The cluster is ready\n\n' + block('5', 'depends-on: ' + id('1') + '\n', 'echo ready');
+  const cLines = chooseNote.split('\n');
+  const [cKind, cK3s, cK3sCheck, cOwn, cReady] = P.metasFor(chooseNote, 'choose.md').map(({ meta }) => meta);
+  const [chooser] = api.parseChoosers(chooseNote);
+  const cWhy = (m) => P.prerequisiteState('choose.md', m).waiting.map((w) => w.type + ':' + w.reason);
+  // Picking a way writes it into the chooser, as the plugin does: `cur` is the note with it.
+  let cur = chooseNote;
+  const pick = (way) => { cur = api.setChosen(chooseNote, id('1'), way); P.metasFor(cur, 'choose.md'); };
+  const section = (heading) => { const ls = cur.split('\n'); const at = ls.indexOf(heading); const s = api.sectionAround(api.noteHeadings(ls), at, ls.length); return [s.from, s.to]; };
+  eq('a chooser is parsed', [chooser.forId, chooser.prompt, chooser.labels[id('4')], chooser.warnings], [id('1'), 'How will you get a cluster?', 'Your own', []]);
+  eq('a chooser without for warns', api.parseChoosers('```choose\nprompt: hi\n```')[0].warnings.length, 1);
+  eq('headings in code blocks are not headings', api.noteHeadings(cLines).map((h) => h.text), ['Cluster', '2. The cluster', '2a. Create a kind cluster', '2b. Or create a k3s cluster', '2c. Or use your own cluster', 'The cluster is ready']);
+  eq('a section runs to the next heading at its level', section('### 2b. Or create a k3s cluster'), [cLines.indexOf('### 2b. Or create a k3s cluster'), cLines.indexOf('### 2c. Or use your own cluster')]);
+  eq('the ways are the usual one, then its alternatives', P.chooserWays(id('1'), 'choose.md').map((w) => w.id), [id('1'), id('2'), id('4')]);
+  eq('labels come from the headings, or the chooser', P.chooserWays(id('1'), 'choose.md').map((w) => P.wayLabel(w, chooser, chooseNote)), ['Create a kind cluster', 'Create a k3s cluster', 'Your own']);
+  eq('nothing picked: nothing hidden, and nothing is replaced', [P.currentWay(id('1'), 'choose.md'), P.hiddenSections('choose.md', chooseNote), cWhy(cKind), cWhy(cOwn)], [null, [], [], []]);
+  pick(id('2'));
+  eq('the way picked is written into the chooser', [api.parseChoosers(cur)[0].chosen, cur.includes('Your own\nchosen: ' + id('2') + '\n```')], [id('2'), true]);
+  eq('picking again replaces it', api.setChosen(cur, id('1'), id('4')).split('chosen:').length, 2);
+  eq('and no pick removes it', api.setChosen(cur, id('1'), null), chooseNote);
+  eq('a chooser for another block is left alone', api.setChosen(cur, id('9'), id('4')), cur);
+  eq('a chooser in a callout keeps its prefix', api.setChosen('> ```choose\n> for: ' + id('1') + '\n> ```', id('1'), id('2')), '> ```choose\n> for: ' + id('1') + '\n> chosen: ' + id('2') + '\n> ```');
+  eq('picked k3s: shown, but not locked', [P.currentWay(id('1'), 'choose.md').way.id, P.currentWay(id('1'), 'choose.md').locked], [id('2'), false]);
+  eq('the other ways\' sections are hidden', P.hiddenSections('choose.md', cur), [section('### 2a. Create a kind cluster'), section('### 2c. Or use your own cluster')]);
+  eq('the usual way and the other alternative aren\'t needed', [cWhy(cKind), cWhy(cOwn)], [['replaced:chosen'], ['replaced:chosen']]);
+  eq('and say the chooser is set to another way', P.prerequisiteState('choose.md', cKind).waiting[0].summary.startsWith("it isn't needed: the chooser is set to the way at line"), true);
+  eq('Run all takes the way picked', [P.onUnusedPath('choose.md', cK3s), P.onUnusedPath('choose.md', cK3sCheck), P.onUnusedPath('choose.md', cOwn), !!P.replacement('choose.md', cKind)], [false, false, true, true]);
+  eq('steps after it wait for it', cWhy(cReady), ['block:not run yet']);
+  P.results.set(P.keyFor('choose.md', cK3s), ok);
+  eq('once the way picked has run, it is locked', P.currentWay(id('1'), 'choose.md').locked, true);
+  P.results.set(P.keyFor('choose.md', cK3sCheck), ok);
+  eq('and stands in for the usual way', cWhy(cReady), []);
+  eq('the others are not needed because it is in use', cWhy(cOwn), ['replaced:in use']);
+  [cK3s, cK3sCheck].forEach((m) => P.results.delete(P.keyFor('choose.md', m)));
+  P.results.set(P.keyFor('choose.md', cOwn), ok);
+  eq('a way that has run wins over the way picked', [P.currentWay(id('1'), 'choose.md').way.id, P.hiddenSections('choose.md', cur).length, cWhy(cK3s)], [id('4'), 2, ['replaced:in use']]);
+  P.results.delete(P.keyFor('choose.md', cOwn));
+  pick(id('1'));
+  eq('picked the usual way: the alternatives aren\'t needed, and their sections are hidden', [cWhy(cK3s), cWhy(cOwn), cWhy(cKind), P.hiddenSections('choose.md', cur).length], [['replaced:chosen'], ['replaced:chosen'], [], 2]);
+  eq('and Run all skips them, as usual', [P.onUnusedPath('choose.md', cK3s), P.onUnusedPath('choose.md', cOwn)], [true, true]);
+  const inside = cur.replace('### 2a. Create a kind cluster\n', '');
+  P.metasFor(inside, 'choose.md');
+  eq('a section holding the chooser is never hidden', P.hiddenSections('choose.md', inside).map(([a]) => inside.split('\n')[a]), ['### 2b. Or create a k3s cluster', '### 2c. Or use your own cluster']);
+  P.noteIndex.delete('choose.md');
+  P.chooserIndex.delete('choose.md');
 }
 
 // Prerequisites: requires

@@ -251,9 +251,29 @@ CONTEXT=your-context
 - **Choosing.** Run all takes the usual way, and skips the whole alternative path. The learner chooses the alternative by running its first block with ▶ (or saving it, for a file block). From then on the path is *in use*: the blocks it replaces show *Not needed*, can't run, and Run all skips them, and follows the alternative instead.
 - **Standing in.** Once every block of the path in the note it starts in has succeeded (manual ones aside), the blocks it replaces count as done, so blocks that depend on them can run. Its blocks in other notes come later, so they don't count.
 - **One way at a time.** While a block of the usual way has a result, the alternative path's blocks show *Not needed*, and can't run, and the other way round. To switch, reset the way that's in use.
+- **More than two ways.** Several alternatives can replace the same blocks, such as creating the cluster with k3s, or on EKS, or using your own, instead of with kind. They're alternatives to each other too: once one is in use, the others show *Not needed* as well.
 - **Reset.** A block of the path can't be reset while blocks that depend on the ones it replaces still have results, so Reset all, from the bottom up, undoes the shared steps first, then the path. The usual way's blocks have no results, so there's nothing to undo there.
 
 The alternative's first block says what it's instead of, until it's run. Give each block of the path a revert if it changes anything, as for any block.
+
+#### Choosing a way
+
+A `choose` block lets the learner pick a way up front, and hides the others. Give it the id of the usual way's first block:
+
+````
+```choose
+for: d3de8f92-e962-4b17-b065-b99a8eba1532
+labels:
+  d3de8f92-e962-4b17-b065-b99a8eba1532: kind
+  1968ff2c-053f-4aa6-bb9a-140f55c00b01: k3sd
+```
+````
+
+- **The ways** are the usual way, then each block that's `instead-of` the block named in `for`. Each shows as a button, labelled from `labels` (by block id), or else from the heading of the way's section.
+- **Sections.** A way's section is the heading its first block sits under, down to the next heading at the same level or above. Write each way under a heading of its own, such as `### 2b. Or create a k3s cluster`, and put what every way needs, such as a check that the cluster is ready, under a heading after them. A section that would take the chooser, or another way's first block, with it is never hidden.
+- **Picking** a way hides the other ways' sections, heading, prose and all, in Reading view and Live Preview. Source mode always shows everything. **Run all** takes the way picked, and the other ways' blocks show *Not needed*. Add `prompt:` to show a line of text above the buttons.
+- **Locked while in use.** Once a way has results, the chooser shows that way, and its other buttons are greyed out until it's reset; hovering over one says so. A way started without the chooser, with ▶, counts too.
+- **Saved** in the note, as a `chosen:` line the plugin adds to the chooser block. Like a block's `result:`, it's the learner's, not the course's: the vault's git clean filter takes it out on commit (see [Saved results](#saved-results)). **Reset all** on the note removes it. Before anything is picked, every way is shown, and Run all takes the usual one.
 
 ### Packages
 

@@ -15,7 +15,17 @@ const {
   sanitizeHTMLToDom,
   parseYaml,
   stringifyYaml,
+  editorInfoField,
+  editorLivePreviewField,
 } = require('obsidian');
+// Obsidian's editor, for hiding the sections of the ways not chosen in Live Preview.
+const CM = (() => {
+  try {
+    return { state: require('@codemirror/state'), view: require('@codemirror/view') };
+  } catch (e) {
+    return { state: {}, view: {} };
+  }
+})();
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -106,6 +116,7 @@ const PRISM_LANGS = { sh: 'bash', zsh: 'bash', py: 'python', js: 'javascript', n
 const LANG_FOR_EXT = { yml: 'yaml', md: 'markdown', sh: 'bash', py: 'python', rb: 'ruby', txt: 'text' };
 
 const BLOCK_RE = /^(run|file)(\s|$)/;
+const CHOOSE_RE = /^choose(\s|$)/;
 
 // The code editor's view, and the Prism language for each file extension it opens.
 const CODE_VIEW = 'runnable-blocks-code';
@@ -154,7 +165,7 @@ function blockKind(info) {
 }
 
 // Finds every ```run and ```file fence in a note, including ones nested in callouts or lists.
-function parseBlocks(text) {
+function parseBlocks(text, infoRe = BLOCK_RE) {
   const lines = text.split('\n');
   const blocks = [];
   let open = null;
@@ -167,7 +178,7 @@ function parseBlocks(text) {
     }
     const closes = m && m[2][0] === open.fence[0] && m[2].length >= open.fence.length && m[3].trim() === '';
     if (closes) {
-      if (BLOCK_RE.test(open.info)) {
+      if (infoRe.test(open.info)) {
         blocks.push({
           lineStart: open.lineStart, lineEnd: i, prefix: open.prefix, info: open.info, source: open.body.join('\n'),
         });
@@ -178,6 +189,94 @@ function parseBlocks(text) {
     }
   }
   return blocks;
+}
+
+// The ```choose blocks in a note: { line, lineEnd, forId, chosen, prompt, labels, warnings }.
+// `chosen` is the id of the way the learner picked, which the plugin writes into the block. Like a
+// block's result, it's the learner's, not the course's.
+function parseChoosers(text) {
+  return parseBlocks(text, CHOOSE_RE).map((b) => {
+    const out = { line: b.lineStart, lineEnd: b.lineEnd, forId: null, chosen: null, prompt: null, labels: {}, warnings: [] };
+    let header = null;
+    try {
+      header = parseYaml(b.source);
+    } catch (e) {
+      out.warnings.push(`The chooser's YAML doesn't parse: ${e.message}`);
+      return out;
+    }
+    if (!header || typeof header !== 'object' || !header.for) {
+      out.warnings.push('A chooser needs "for:", the id of the usual way\'s first block.');
+      return out;
+    }
+    const id = String(header.for).trim();
+    if (UUID_RE.test(id)) out.forId = id;
+    else out.warnings.push(`for: "${id}" isn't a block id. Use the id (a UUID) of the usual way's first block.`);
+    if (header.chosen != null && UUID_RE.test(String(header.chosen).trim())) out.chosen = String(header.chosen).trim();
+    if (header.prompt != null) out.prompt = String(header.prompt);
+    if (header.labels && typeof header.labels === 'object') {
+      for (const [k, v] of Object.entries(header.labels)) out.labels[k] = String(v);
+    }
+    return out;
+  });
+}
+
+// Sets the way picked in the note's chooser for forId: its `chosen:` line, at the end of the block.
+// A null wayId removes it.
+function setChosen(text, forId, wayId) {
+  let out = text;
+  for (const block of parseBlocks(text, CHOOSE_RE).reverse()) {
+    const [chooser] = parseChoosers('```choose\n' + block.source + '\n```');
+    if (chooser.forId !== forId) continue;
+    const lines = block.source.split('\n').filter((line) => !/^chosen\s*:/.test(line));
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    if (wayId) lines.push(`chosen: ${wayId}`);
+    out = replaceBody(out, block, lines.join('\n'));
+  }
+  return out;
+}
+
+// The note's headings, outside code blocks, callouts and frontmatter: { line, level, text }.
+function noteHeadings(lines) {
+  const out = [];
+  let i = 0;
+  if (/^---\s*$/.test(lines[0] || '')) {
+    const end = lines.findIndex((l, j) => j > 0 && /^---\s*$/.test(l));
+    if (end > 0) i = end + 1;
+  }
+  let fence = null;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(FENCE_RE);
+    if (fence) {
+      if (m && m[2][0] === fence[0] && m[2].length >= fence.length && m[3].trim() === '') fence = null;
+      continue;
+    }
+    if (m) {
+      fence = m[2];
+      continue;
+    }
+    const h = line.match(/^(#{1,6})[ \t]+(.*?)[ \t#]*$/);
+    if (h) out.push({ line: i, level: h[1].length, text: h[2] });
+  }
+  return out;
+}
+
+// The section a line is in: from the heading above it to the next heading at that level or above.
+// `to` is the first line after it. Null if there's no heading above the line.
+function sectionAround(headings, line, total) {
+  let heading = null;
+  for (const h of headings) {
+    if (h.line > line) break;
+    heading = h;
+  }
+  if (!heading) return null;
+  const next = headings.find((h) => h.line > heading.line && h.level <= heading.level);
+  return { heading, from: heading.line, to: next ? next.line : total };
+}
+
+// The line a block's `id:` is on, inside a callout or not. -1 if it isn't in the note.
+function lineOfId(lines, id) {
+  return lines.findIndex((l) => l.replace(/^(?:[ \t]*>)*[ \t]*/, '') === `id: ${id}`);
 }
 
 // Splits a block body into its YAML header and the code or file content below the first "---" line.
@@ -1001,10 +1100,10 @@ class RunBlock extends MarkdownRenderChild {
     const replaced = waiting.find((w) => w.type === 'replaced' || w.type === 'other-path');
     if (replaced) {
       setIcon(this.waitEl.createSpan({ cls: 'run-block-waiting-icon' }), 'split');
-      this.waitEl.createSpan({ text: "Not needed: you're using " });
+      this.waitEl.createSpan({ text: replaced.chosen ? 'Not needed: the chooser is set to the way at ' : "Not needed: you're using " });
       blockRef(replaced);
       reason(`line ${replaced.line}`);
-      this.waitEl.createSpan({ text: ' instead. Reset that to do this instead.' });
+      this.waitEl.createSpan({ text: replaced.chosen ? '. Choose this way there to do this instead.' : ' instead. Reset that to do this instead.' });
       if (!res) {
         this.statusEl.addClass('is-replaced');
         this.statusEl.setText('Not needed');
@@ -1086,6 +1185,63 @@ function renderItems(parent, items) {
   }
 }
 
+// Widget for ```choose blocks: one button per way of doing a step (the usual way, and each
+// instead-of alternative to it). Picking one hides the sections of the others, and Run all takes it.
+class ChooseBlock extends MarkdownRenderChild {
+  constructor(plugin, el, source, ctx) {
+    super(el);
+    this.plugin = plugin;
+    this.source = source;
+    this.ctx = ctx;
+  }
+
+  onload() {
+    this.containerEl.addClass('run-block-choose');
+    this.plugin.choosers.add(this);
+    this.render();
+  }
+
+  onunload() {
+    this.plugin.choosers.delete(this);
+  }
+
+  async render() {
+    const path = this.ctx.sourcePath;
+    const info = this.ctx.getSectionInfo(this.containerEl);
+    const file = this.plugin.getFile(path);
+    const text = (info && info.text) || (file ? await this.plugin.app.vault.cachedRead(file) : '');
+    const [chooser] = parseChoosers('```choose\n' + this.source + '\n```');
+    const el = this.containerEl;
+    el.empty();
+    for (const warning of chooser.warnings) el.createDiv({ cls: 'run-block-warning', text: warning });
+    if (!chooser.forId) return;
+    const ways = this.plugin.chooserWays(chooser.forId, path);
+    if (ways.length < 2) {
+      el.createDiv({ cls: 'run-block-warning', text: ways.length ? 'No block is instead-of the block this chooser is for, so there is nothing to choose.' : `There's no block ${chooser.forId} in the vault.` });
+      return;
+    }
+    const current = this.plugin.currentWay(chooser.forId, path);
+    const label = (w) => this.plugin.wayLabel(w, chooser, text);
+    if (chooser.prompt) el.createDiv({ cls: 'run-block-choose-prompt', text: chooser.prompt });
+    const row = el.createDiv({ cls: 'run-block-choose-ways' });
+    for (const way of ways) {
+      const active = current && current.way.id === way.id;
+      const btn = row.createEl('button', { cls: `run-block-choose-way${active ? ' is-active mod-cta' : ''}`, text: label(way) });
+      // Locked to the way in use. Not the disabled attribute: a disabled button shows no tooltip.
+      const locked = current && current.locked && !active;
+      if (locked) {
+        btn.addClass('is-disabled');
+        btn.setAttr('aria-disabled', 'true');
+        btn.setAttr('aria-label', `You're using ${label(current.way)}. To choose another way, reset its blocks first.`);
+      }
+      btn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        if (!locked) this.plugin.chooseWay(chooser.forId, way.id, path);
+      });
+    }
+  }
+}
+
 class RunnableBlocksPlugin extends Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -1106,11 +1262,28 @@ class RunnableBlocksPlugin extends Plugin {
     this.prism = null;
     this.prismReady = loadPrism().then((prism) => { this.prism = prism; }).catch(() => {});
 
+    // The way picked in a chooser was once kept in the settings. It's in the note now.
+    if (this.settings.choices) {
+      delete this.settings.choices;
+      await this.saveSettings();
+    }
+    this.chooserIndex = new Map(); // note path -> its choosers, with the way picked in each
+    this.choosers = new Set(); // ChooseBlock widgets on screen
+    this.hiddenShown = new Map(); // note path -> the hidden sections last applied, to spot changes
+
     for (const kind of ['run', 'file']) {
       this.registerMarkdownCodeBlockProcessor(kind, (source, el, ctx) => {
         ctx.addChild(new RunBlock(this, el, source, ctx, ctx.getSectionInfo(el), kind));
       });
     }
+    this.registerMarkdownCodeBlockProcessor('choose', (source, el, ctx) => {
+      ctx.addChild(new ChooseBlock(this, el, source, ctx));
+    });
+    // Reading view: hide each section of a way that wasn't chosen.
+    this.registerMarkdownPostProcessor((el, ctx) => this.hideIfNotChosen(el, ctx));
+    // Live Preview: the same, with an editor extension.
+    const hiding = this.wayHidingExtension();
+    if (hiding) this.registerEditorExtension(hiding);
 
     this.addCommand({
       id: 'run-all',
@@ -1451,7 +1624,11 @@ class RunnableBlocksPlugin extends Plugin {
       return { block, meta };
     });
     // Remember the note's blocks, so dependencies between them can be looked up by id.
-    if (sourcePath) this.noteIndex.set(sourcePath, entries.map(({ meta }) => meta));
+    if (sourcePath) {
+      this.noteIndex.set(sourcePath, entries.map(({ meta }) => meta));
+      if (!this.chooserIndex) this.chooserIndex = new Map();
+      this.chooserIndex.set(sourcePath, parseChoosers(text));
+    }
     return entries;
   }
 
@@ -1464,15 +1641,20 @@ class RunnableBlocksPlugin extends Plugin {
     const waiting = [];
     // Two ways of doing the same thing (see instead-of) can't both be in use: a block can't run while
     // an alternative to it has, nor an alternative while a block it replaces has.
+    // The way that's used instead: one that's been started, or picked in a chooser.
+    const usedInstead = (other) => {
+      const label = blockLabel(other.meta);
+      const note = other.path === sourcePath ? null : other.path;
+      const chosen = !this.pathInUse(this.alternativePath(other)) && !this.resultFor(other.path, other.meta);
+      return {
+        type: 'replaced', id: other.meta.id, label, line: other.meta.lineStart + 1, note, reason: chosen ? 'chosen' : 'in use', chosen,
+        summary: chosen
+          ? `it isn't needed: the chooser is set to the way at line ${other.meta.lineStart + 1} (${label})${note ? ` in ${noteName(note)}` : ''}. Choose this way there to do this instead`
+          : `it isn't needed: you're using line ${other.meta.lineStart + 1} (${label})${note ? ` in ${noteName(note)}` : ''} instead. Reset that to do this instead`,
+      };
+    };
     const alt = this.replacement(sourcePath, meta);
-    if (alt) {
-      const label = blockLabel(alt.meta);
-      const note = alt.path === sourcePath ? null : alt.path;
-      waiting.push({
-        type: 'replaced', id: alt.meta.id, label, line: alt.meta.lineStart + 1, note, reason: 'in use',
-        summary: `it isn't needed: you're using line ${alt.meta.lineStart + 1} (${label})${note ? ` in ${noteName(note)}` : ''} instead. Reset that to do this instead`,
-      });
-    }
+    if (alt) waiting.push(usedInstead(alt));
     const others = new Set();
     for (const start of this.pathsThrough(sourcePath, meta)) for (const id of start.meta.insteadOf) others.add(id);
     for (const id of others) {
@@ -1484,6 +1666,26 @@ class RunnableBlocksPlugin extends Plugin {
         type: 'other-path', id, label, line: found.meta.lineStart + 1, note, reason: 'already run',
         summary: `reset line ${found.meta.lineStart + 1} (${label})${note ? ` in ${noteName(note)}` : ''} first: this is instead of it`,
       });
+    }
+    // Alternatives to the same blocks, such as creating a cluster with k3s or using your own instead
+    // of with kind, are alternatives to each other too: only one of them can be in use.
+    const mine = this.pathsThrough(sourcePath, meta);
+    const siblings = new Map();
+    for (const start of mine) {
+      for (const other of this.siblingAlternatives(start)) {
+        if (!mine.some((s) => s.meta.id === other.meta.id)) siblings.set(other.meta.id, other);
+      }
+    }
+    for (const other of siblings.values()) {
+      if (this.pathInUse(this.alternativePath(other)) || this.isChosen(other)) waiting.push(usedInstead(other));
+    }
+    // The usual way picked in a chooser: its alternatives aren't needed either.
+    for (const start of mine) {
+      for (const forId of start.meta.insteadOf) {
+        if (this.choiceFor(forId) !== forId || this.wayInUse(this.chooserWays(forId, start.path))) continue;
+        const usual = this.findBlock(forId, start.path);
+        if (usual && !waiting.some((w) => w.type === 'replaced')) waiting.push(usedInstead(usual));
+      }
     }
     for (const req of meta.requires || []) {
       if (req.type === 'command') {
@@ -1573,8 +1775,10 @@ class RunnableBlocksPlugin extends Plugin {
 
   // The processor only gets the block body; the fence line (language, id=, md5=…) has to be read from the note.
   async resolveMeta(sourcePath, source, section, kind) {
+    // In Reading view, a section's text can still be empty when its block is first rendered. Taken
+    // as the note, it would empty the note's entry in the index, so read the note instead.
     let text = section ? section.text : null;
-    if (text == null) text = await this.readNote(sourcePath);
+    if (!text) text = await this.readNote(sourcePath);
     const want = normalize(source);
     const matches = this.metasFor(text, sourcePath).filter(({ meta }) => meta.kind === kind && meta.source === want);
     const inSection = section && matches.find(({ block }) => block.lineStart >= section.lineStart && block.lineEnd <= section.lineEnd);
@@ -1916,6 +2120,9 @@ class RunnableBlocksPlugin extends Plugin {
         if (m.requires.length || m.insteadOf.length || this.alternativesFor(m).length) widget.scheduleRender();
       }
     }
+    // Choosers show which way is in use, and what's hidden follows it.
+    if (this.choosers) for (const chooser of this.choosers) chooser.render();
+    if (this.choosers) this.refreshWays();
   }
 
   // Commands may change files on disk, which changes what file blocks report about them.
@@ -2246,6 +2453,210 @@ class RunnableBlocksPlugin extends Plugin {
     return out;
   }
 
+  // The other alternatives to any of the blocks this alternative replaces.
+  siblingAlternatives(start) {
+    const out = [];
+    for (const [path, metas] of this.noteIndex) {
+      for (const m of metas) {
+        if (m.id === start.meta.id || !m.insteadOf || !m.insteadOf.some((id) => start.meta.insteadOf.includes(id))) continue;
+        out.push({ path, meta: m });
+      }
+    }
+    return out;
+  }
+
+  // A chooser's ways: the usual way (the block it's for), then each alternative to that block.
+  // Each is { id, path, meta, usual }; the usual way's id is the chooser's for-id.
+  chooserWays(forId, sourcePath) {
+    const usual = this.findBlock(forId, sourcePath);
+    if (!usual) return [];
+    return [{ id: forId, path: usual.path, meta: usual.meta, usual: true },
+      ...this.alternativesFor(usual.meta).map((s) => ({ id: s.meta.id, path: s.path, meta: s.meta, usual: false }))];
+  }
+
+  // The way that's been started, by its results: the usual way if a block any alternative replaces
+  // has one, or an alternative whose path is in use. Null if none has.
+  wayInUse(ways) {
+    if (!ways.length) return null;
+    const usualIds = new Set([ways[0].id]);
+    for (const w of ways.slice(1)) for (const id of w.meta.insteadOf) usualIds.add(id);
+    for (const id of usualIds) {
+      const found = this.findBlock(id, ways[0].path);
+      if (found && this.resultFor(found.path, found.meta)) return ways[0];
+    }
+    return ways.slice(1).find((w) => this.pathInUse(this.alternativePath(w))) || null;
+  }
+
+  // The way a chooser shows: the one in use, which can't be changed until it's reset (locked), or
+  // else the one picked. Null if neither.
+  currentWay(forId, sourcePath) {
+    const ways = this.chooserWays(forId, sourcePath);
+    const inUse = this.wayInUse(ways);
+    if (inUse) return { way: inUse, locked: true };
+    const picked = ways.find((w) => w.id === this.choiceFor(forId));
+    return picked ? { way: picked, locked: false } : null;
+  }
+
+  // Whether an alternative was picked in a chooser, before any way has been started. It then counts
+  // as the way in use: Run all takes it, and the other ways' blocks aren't needed.
+  isChosen(start) {
+    for (const forId of start.meta.insteadOf) {
+      if (this.choiceFor(forId) !== start.meta.id) continue;
+      if (!this.wayInUse(this.chooserWays(forId, start.path))) return true;
+    }
+    return false;
+  }
+
+  // The way picked in the chooser for forId, from its `chosen:` line, in any note. Null if none.
+  choiceFor(forId) {
+    for (const choosers of (this.chooserIndex || new Map()).values()) {
+      const chooser = choosers.find((c) => c.forId === forId && c.chosen);
+      if (chooser) return chooser.chosen;
+    }
+    return null;
+  }
+
+  // Picks a way, by writing it into the chooser's block in the note.
+  async chooseWay(forId, wayId, sourcePath) {
+    const current = this.currentWay(forId, sourcePath);
+    if (current && current.locked) return;
+    // Editing the note indexes it as edited, choosers and all.
+    await this.editNote(sourcePath, (text) => setChosen(text, forId, wayId));
+    this.notifyDependents();
+  }
+
+  // Forgets the ways picked in a note's choosers.
+  async clearChoices(sourcePath, text) {
+    const picked = parseChoosers(text).filter((c) => c.forId && c.chosen);
+    if (!picked.length) return;
+    await this.editNote(sourcePath, (t) => picked.reduce((acc, c) => setChosen(acc, c.forId, null), t));
+    this.notifyDependents();
+  }
+
+  // A way's button label: the chooser's label for it, or else its section's heading, without
+  // numbering such as "2b." and a leading "Or".
+  wayLabel(way, chooser, text) {
+    if (chooser.labels[way.id]) return chooser.labels[way.id];
+    const lines = text.split('\n');
+    const at = lineOfId(lines, way.meta.id);
+    const section = at >= 0 && sectionAround(noteHeadings(lines), at, lines.length);
+    if (!section) return blockLabel(way.meta);
+    const heading = section.heading.text.replace(/^[\w.]+\.\s+/, '').replace(/^or\s+/i, '');
+    return heading.charAt(0).toUpperCase() + heading.slice(1);
+  }
+
+  // The sections of a note to hide, as [from, to) line ranges: for each chooser in it, the section
+  // of each way in this note that isn't the one shown. A section is left alone if it would take the
+  // chooser, or the shown way, or another way, with it.
+  hiddenSections(sourcePath, text) {
+    if (!text.includes('```choose')) return [];
+    const lines = text.split('\n');
+    const headings = noteHeadings(lines);
+    const out = [];
+    for (const chooser of parseChoosers(text)) {
+      if (!chooser.forId) continue;
+      const current = this.currentWay(chooser.forId, sourcePath);
+      if (!current) continue;
+      const ways = this.chooserWays(chooser.forId, sourcePath)
+        .map((w) => ({ w, at: lineOfId(lines, w.meta.id) }))
+        .filter(({ at }) => at >= 0);
+      for (const { w, at } of ways) {
+        if (w.id === current.way.id) continue;
+        const s = sectionAround(headings, at, lines.length);
+        if (!s) continue;
+        const inside = (line) => line >= s.from && line < s.to;
+        if (inside(chooser.line) || ways.some((o) => o.w.id !== w.id && inside(o.at))) continue;
+        out.push([s.from, s.to]);
+      }
+    }
+    return out;
+  }
+
+  // Reading view: hides a rendered section if it's in a way that isn't chosen. Its text can still be
+  // empty when it's first rendered, so until it's there, this tries again shortly.
+  hideIfNotChosen(el, ctx, tries = 0) {
+    const info = ctx.getSectionInfo(el);
+    if (!info || !info.text) {
+      if (tries < 40) setTimeout(() => this.hideIfNotChosen(el, ctx, tries + 1), 50);
+      return;
+    }
+    if (!info.text.includes('```choose')) return;
+    const hidden = this.hiddenSections(ctx.sourcePath, info.text);
+    el.toggleClass('run-block-way-hidden', hidden.some(([from, to]) => info.lineStart >= from && info.lineEnd < to));
+  }
+
+  // Live Preview: replaces the hidden sections' lines, so they take no space. It's rebuilt when the
+  // note changes, when the editor switches between Live Preview and Source mode (which shows
+  // everything), and when told to (refreshWays).
+  wayHidingExtension() {
+    const { StateField, StateEffect, Prec } = CM.state;
+    const { EditorView, Decoration } = CM.view;
+    if (!StateField || !StateEffect || !Prec || !EditorView || !Decoration) return null;
+    this.refreshWaysEffect = StateEffect.define();
+    const plugin = this;
+    const livePreview = (state) => !editorLivePreviewField || state.field(editorLivePreviewField, false) !== false;
+    const build = (state) => {
+      const info = editorInfoField && state.field(editorInfoField, false);
+      const file = info && info.file;
+      if (!file || !livePreview(state)) return Decoration.none;
+      const ranges = plugin.hiddenSections(file.path, state.doc.toString());
+      if (!ranges.length) return Decoration.none;
+      const doc = state.doc;
+      return Decoration.set(ranges.map(([from, to]) => Decoration.replace({ block: true })
+        .range(doc.line(from + 1).from, doc.line(Math.min(to, doc.lines)).to)), true);
+    };
+    const field = StateField.define({
+      create: build,
+      update(decorations, tr) {
+        if (tr.docChanged || tr.effects.some((e) => e.is(plugin.refreshWaysEffect))
+          || livePreview(tr.startState) !== livePreview(tr.state)) return build(tr.state);
+        return decorations;
+      },
+      provide: (f) => [EditorView.decorations.from(f), EditorView.atomicRanges.of((view) => view.state.field(f))],
+    });
+    return Prec.highest(field);
+  }
+
+  // Re-applies the hidden sections in every open note with a chooser, if they've changed.
+  refreshWays() {
+    if (!this.app || !this.app.workspace) return;
+    for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView) || !view.file) continue;
+      const text = view.getViewData ? view.getViewData() : view.data || '';
+      if (!text.includes('```choose')) continue;
+      const hidden = JSON.stringify(this.hiddenSections(view.file.path, text));
+      const key = `${leaf.id || ''}:${view.file.path}`;
+      if (this.hiddenShown.get(key) === hidden) continue;
+      this.hiddenShown.set(key, hidden);
+      const cm = view.editor && view.editor.cm;
+      if (cm && this.refreshWaysEffect) cm.dispatch({ effects: this.refreshWaysEffect.of(null) });
+      if (view.getMode() === 'preview') this.applyHiddenInReadingView(view, JSON.parse(hidden));
+    }
+  }
+
+  // Reading view: shows and hides the sections already rendered, in place, so the page doesn't
+  // scroll. The renderer's sections and their lines aren't part of Obsidian's documented API, so
+  // without them this re-renders the whole note instead.
+  applyHiddenInReadingView(view, hidden) {
+    const renderer = view.previewMode && view.previewMode.renderer;
+    if (!renderer || !Array.isArray(renderer.sections) || typeof renderer.queueRender !== 'function') {
+      view.previewMode.rerender(true);
+      return;
+    }
+    const scroller = renderer.previewEl;
+    const top = scroller ? scroller.scrollTop : null;
+    for (const section of renderer.sections) {
+      if (!section.el || !section.start || !section.end) continue;
+      const on = hidden.some(([from, to]) => section.start.line >= from && section.end.line < to);
+      if (section.el.hasClass('run-block-way-hidden') === on) continue;
+      section.el.toggleClass('run-block-way-hidden', on);
+      section.computed = false; // its height changed: measure it again
+    }
+    renderer.queueRender();
+    if (scroller && top != null) scroller.scrollTop = top;
+  }
+
   // An alternative path: the block that starts it (with instead-of), then the blocks that depend on
   // it, directly or through each other, in any note. Each is { path, meta }. Blocks both ways need,
   // such as installing an operator once there's a cluster, depend on the usual blocks instead, so
@@ -2297,12 +2708,13 @@ class RunnableBlocksPlugin extends Plugin {
 
   // Whether a block is on an alternative path that isn't in use, which Run all leaves alone.
   onUnusedPath(sourcePath, meta) {
-    return this.pathsThrough(sourcePath, meta).some((start) => !this.pathInUse(this.alternativePath(start)));
+    return this.pathsThrough(sourcePath, meta).some((start) => !this.pathInUse(this.alternativePath(start)) && !this.isChosen(start));
   }
 
-  // The alternative this block has been replaced by: the start of a path that's in use. Null if none.
+  // The alternative this block has been replaced by: the start of a path that's in use, or one
+  // picked in a chooser. Null if none.
   replacement(sourcePath, meta) {
-    return this.alternativesFor(meta).find((start) => this.pathInUse(this.alternativePath(start))) || null;
+    return this.alternativesFor(meta).find((start) => this.pathInUse(this.alternativePath(start)) || this.isChosen(start)) || null;
   }
 
   // Why a block can't run again, or null if it can: a block that isn't idempotent runs once, until
@@ -2478,6 +2890,8 @@ class RunnableBlocksPlugin extends Plugin {
       reset++;
     }
     notice.hide();
+    // Every block is reset, so no way is in use: forget the ways picked in the note's choosers too.
+    await this.clearChoices(file.path, await this.readNote(file.path));
     new Notice(`Reset ${reset} block(s).`, 6000);
   }
 
@@ -2619,4 +3033,4 @@ class RunnableBlocksSettingTab extends PluginSettingTab {
 module.exports = RunnableBlocksPlugin;
 // For scripts that check and run notes outside Obsidian, such as the write-course skill's. Obsidian
 // only uses the class itself.
-Object.assign(module.exports, { evaluate, normalize, md5, blockLabel, withLearner, packageSetup });
+Object.assign(module.exports, { evaluate, normalize, md5, blockLabel, withLearner, packageSetup, parseChoosers, setChosen });

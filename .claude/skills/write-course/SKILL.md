@@ -55,7 +55,13 @@ Follow the shape of `Shadow Linking/1 Setup.md`:
 5. **Waits**: after anything asynchronous, wait for it inside the action block, not in a separate block the learner might skip. `kind create cluster` returns before its nodes are Ready, so follow it with `kubectl wait --for=condition=Ready nodes --all`. Use `kubectl wait`, `helm --wait`, or a bounded loop: `for i in $(seq 1 30); do CHECK && break; sleep 1; done`. Raise `timeout:` on blocks that take more than 30 seconds.
 6. **Port forwards and profiles**: start background processes with `nohup … &`, record their PIDs in `lab/*.pid`, and make the block safe to run again (kill the old ones first). Its revert kills them.
 7. **Teardown**: Reset all, bottom up, is the normal teardown. Keep a `manual: true` "if a reset gets stuck" block that deletes everything at once.
-8. **Bring your own**: when the lab needs infrastructure a learner may already have, such as a Kubernetes cluster, offer it as an alternative path with `instead-of`, next to the step that creates it. Both ways must leave the same state (for Kubernetes, one context name that every later block uses), and the own-infrastructure way checks it's suitable before anything changes it. See "Alternative paths" in `references/block-format.md`, and Shadow Linking's step 2 as the model.
+8. **Bring your own**: when the lab needs infrastructure a learner may already have, offer it as an alternative path with `instead-of`, next to the step that creates it. Both ways must leave the same state, and the own-infrastructure way checks it's suitable before anything changes it. See "Alternative paths" in `references/block-format.md`.
+9. **Kubernetes courses don't create a cluster.** The vault's shared page, `Kubernetes cluster/Kubernetes cluster.md`, creates one (with kind, k3sd or EKS, or uses the learner's own) under the context `learning-lab`, and installs shared add-ons: cert-manager and the Redpanda operator. A course's step 2 is one block that:
+   - `depends-on` the shared page's "the cluster is ready" check (`d1606896-2de3-4bc8-9c16-e365f4de351f`), or its last add-on check if it needs that add-on (cert-manager `43a49ea8-816f-4c6f-9d2a-1c976e45fde1`, the Redpanda operator `6b5c7881-dc7d-46fb-b9e7-465a58f539f5`);
+   - `requires` a command proving `learning-lab` is reachable now;
+   - checks what this course needs that the shared page doesn't promise (admin rights it uses, CRD versions, its namespaces and NodePorts not already taken), then adds the course's own context name as another name for `learning-lab`, so the rest of the course uses `--context COURSE`. Its revert removes only that name.
+
+   Everything else the course creates goes in its own namespaces, and its reverts remove it, leaving the cluster and add-ons for the other courses. If several courses need a cluster-wide component, add it to the shared page's add-ons rather than installing it in a course, since one course's Reset would remove it from under another. Use `kubectl port-forward` to reach Services from the laptop: it works the same on every way, where kind port mappings or node IPs don't. `Kubernetes 101/1 Setup.md` and `Shadow Linking/1 Setup.md` are the models. A course needing a cluster of a special shape, such as Day 2 Operations' nodes on two Kubernetes versions, still creates its own.
 
 ### 4. Write each lesson
 
@@ -119,7 +125,7 @@ Tell the user before building a lab. It uses Docker and minutes of time, and it 
 
 ### 8. Hand it over
 
-- Make sure no note contains `result:`, `original:` or `learner:` entries from testing, unless the user wants them. They're the learner's progress, not course content. A block with `original:` has a learner's answer below `---`: Reset it, or move the original back below `---` and delete the entry.
+- Make sure no note contains `result:`, `original:` or `learner:` entries, or a `chosen:` line in a `choose` block, from testing, unless the user wants them. They're the learner's progress, not course content. A block with `original:` has a learner's answer below `---`: Reset it, or move the original back below `---` and delete the entry.
 - Lab output (`lab/`) is ignored by the vault's `.gitignore`. Don't commit generated files, keys or certificates.
 - Summarise for the user: the pages, what each teaches, what was tested and how, what can't be undone, and anything you couldn't test.
 - Commit only when asked.

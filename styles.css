@@ -249,3 +249,15 @@
 .run-code-file .run-block-highlight {
   min-height: 100%;
 }
+
+/* ```choose: a row of buttons, one per way of doing a step */
+.run-block-choose { margin: 0.5em 0; }
+.run-block-choose-prompt { font-weight: var(--font-semibold); margin-bottom: var(--size-4-2); }
+.run-block-choose-ways { display: flex; flex-wrap: wrap; gap: var(--size-4-2); }
+.run-block-choose-way.is-disabled { opacity: 0.5; cursor: not-allowed; }
+/* Live Preview: as for run blocks, the wrapper owns the spacing, so its hover outline fits the
+   chooser, and there's room for its "edit block" button. */
+.markdown-source-view.mod-cm6 .cm-embed-block > .run-block-choose { margin: 0; padding-inline-end: var(--size-4-9); }
+
+/* Reading view: the sections of the ways not chosen */
+.run-block-way-hidden { display: none; }
