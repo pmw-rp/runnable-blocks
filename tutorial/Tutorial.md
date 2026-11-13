@@ -138,19 +138,23 @@ To check without showing the answer to anyone who switches to source mode, give 
 ```run
 id: 85bb4f99-6e2e-494d-be3a-f272c00b336f
 lang: bash
+editable: true
 expect:
   md5: 5d41402abc4b2a76b9719d911017c592
 ---
 echo hello
 ```
 
+It's editable (see [[#4. Editable blocks]]): change `hello` to another word and run it, and it fails, though the answer it wants is never shown. **Reset** puts it back.
+
 You rarely work out a hash by hand: run the block, switch to source mode, and copy `output-md5` from its `result:` into `expect.md5`.
 
-`expect.command-md5` checks the code itself, for when the exact command matters. This block passes as written, and fails if you change a single character of its code:
+`expect.command-md5` checks the code itself, for when the exact command matters. This block passes as written. It's editable too: change a single character of its code, even one that doesn't change the output, and it fails.
 
 ```run
 id: b3d09f09-9fe7-41ce-8360-e0131fe7ee09
 lang: bash
+editable: true
 expect:
   command-md5: 178da377b9d3843b1518d43cbd61ee9e
 ---

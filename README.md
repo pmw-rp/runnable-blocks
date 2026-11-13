@@ -506,3 +506,7 @@ BRAT picks the new version up from there.
 ## Security
 
 `run` blocks only run when you press ▶ or use **Run all**. A file block's `check` runs when you save the file. With **Check when a note opens** turned on (it's off by default), checks and `requires` commands also run when a note opens. Everything runs with your full user permissions, so read notes from other people, in source mode, before running their blocks.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
