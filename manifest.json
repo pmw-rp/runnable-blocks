@@ -1,7 +1,7 @@
 {
   "id": "runnable-blocks",
   "name": "Runnable Blocks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.4.0",
   "description": "Runnable code and file blocks in your notes, with checks, prerequisites, undo and exercises: for hands-on courses and runbooks.",
   "author": "Paul Wilkinson",
