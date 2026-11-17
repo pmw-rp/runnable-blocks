@@ -165,12 +165,14 @@ function blockKind(info) {
 }
 
 // Finds every ```run and ```file fence in a note, including ones nested in callouts or lists.
+// A note with Windows line endings works the same: each line's "\r" is left out of what's matched
+// and of the block's source, and replaceBody puts it back when the block is written.
 function parseBlocks(text, infoRe = BLOCK_RE) {
   const lines = text.split('\n');
   const blocks = [];
   let open = null;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const line = withoutCR(lines[i]);
     const m = line.match(FENCE_RE);
     if (!open) {
       if (m) open = { lineStart: i, prefix: m[1], fence: m[2], info: m[3].trim(), body: [] };
@@ -194,6 +196,11 @@ function parseBlocks(text, infoRe = BLOCK_RE) {
     }
   }
   return blocks;
+}
+
+// A line of a note split on "\n", without the "\r" a Windows line ending leaves on it.
+function withoutCR(line) {
+  return line.endsWith('\r') ? line.slice(0, -1) : line;
 }
 
 // The ```choose blocks in a note: { line, lineEnd, forId, chosen, prompt, labels, warnings }.
@@ -244,6 +251,7 @@ function setChosen(text, forId, wayId) {
 function noteHeadings(lines) {
   const out = [];
   let i = 0;
+  lines = lines.map(withoutCR);
   if (/^---\s*$/.test(lines[0] || '')) {
     const end = lines.findIndex((l, j) => j > 0 && /^---\s*$/.test(l));
     if (end > 0) i = end + 1;
@@ -281,7 +289,7 @@ function sectionAround(headings, line, total) {
 
 // The line a block's `id:` is on, inside a callout or not. -1 if it isn't in the note.
 function lineOfId(lines, id) {
-  return lines.findIndex((l) => l.replace(/^(?:[ \t]*>)*[ \t]*/, '') === `id: ${id}`);
+  return lines.findIndex((l) => withoutCR(l).replace(/^(?:[ \t]*>)*[ \t]*/, '') === `id: ${id}`);
 }
 
 // Splits a block body into its YAML header and the code or file content below the first "---" line.

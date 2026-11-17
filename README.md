@@ -67,6 +67,8 @@ expect:
 
 The header can also open with its own `---`, like note frontmatter. Only the first `---` after the header ends it, so file content can contain `---` lines.
 
+Notes with Windows line endings (CRLF) work the same way, and the plugin keeps them when it writes to a note. Blocks inside callouts can have blank lines, written as a bare `>`.
+
 ### `run` blocks
 
 | Key | Meaning |

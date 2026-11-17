@@ -24,8 +24,12 @@ for (const prefix of ['', '> ', '> > ']) for (const orig of originals) for (cons
   const note = `# Note\n\nText.\n\n${wrap(prefix, edited)}\n\nAfter.\n`;
   const want = `# Note\n\nText.\n\n${wrap(prefix, body.replace(/\s+$/, ''))}\n\nAfter.\n`;
   const got = execFileSync('python3', [FILTER], { input: note }).toString();
+  // The same note with Windows line endings comes back with them.
+  const crlf = (t) => t.replace(/\n/g, '\r\n');
+  const gotCRLF = execFileSync('python3', [FILTER], { input: crlf(note) }).toString();
   n++;
   const problems = [];
+  if (gotCRLF !== crlf(want)) problems.push(`filter gave, with CRLF\n${JSON.stringify(gotCRLF)}\nwanted\n${JSON.stringify(crlf(want))}`);
   if (back.code !== answer.replace(/\s+$/, '')) problems.push(`plugin reads code ${JSON.stringify(back.code)}`);
   if (back.original !== meta.original) problems.push(`plugin reads original ${JSON.stringify(back.original)}`);
   if (got !== want) problems.push(`filter gave\n${got}\nwanted\n${want}`);
@@ -40,7 +44,9 @@ for (const prefix of ['', '> ']) {
   const author = `# Note\n\n${['```choose', `for: ${FOR}`, 'labels:', `  ${FOR}: kind`, '```'].map((l) => prefix + l).join('\n')}\n\nAfter.\n`;
   const picked = setChosen(author, FOR, '00000000-0000-4000-8000-000000000002');
   const got = execFileSync('python3', [FILTER], { input: picked }).toString();
+  const gotCRLF = execFileSync('python3', [FILTER], { input: picked.replace(/\n/g, '\r\n') }).toString();
   n++;
+  if (gotCRLF !== author.replace(/\n/g, '\r\n')) { fails++; console.log(`FAIL chooser with CRLF prefix=${JSON.stringify(prefix)}`); }
   if (picked === author || got !== author) { fails++; console.log(`FAIL chooser prefix=${JSON.stringify(prefix)}: filter gave\n${got}\nwanted\n${author}`); }
 }
 console.log(`${n - fails}/${n} round trips ok`);

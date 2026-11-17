@@ -190,6 +190,23 @@ eq('blank line in a nested callout', api.parseBlocks('> > ```run\n> > a\n> >\n> 
   const written = api.replaceBody(text, { lineStart: 0, lineEnd: 2, prefix: '> ' }, 'id: a\n---\nx\n\ny');
   eq('replaceBody then parseBlocks gives the same body', api.parseBlocks(written)[0].source, 'id: a\n---\nx\n\ny');
 }
+// Windows (CRLF) line endings: a note reads the same as with LF, and edits keep its endings
+{
+  const crlf = (t) => t.replace(/\n/g, '\r\n');
+  const bareLF = (t) => /(^|[^\r])\n/.test(t);
+  const lfNote = note; // the demo note: blocks in and out of callouts, file and run blocks
+  const lfBlocks = api.parseBlocks(lfNote), crBlocks = api.parseBlocks(crlf(lfNote));
+  eq('CRLF: the same blocks are found', crBlocks.map((b) => [b.lineStart, b.lineEnd, b.prefix, b.info]), lfBlocks.map((b) => [b.lineStart, b.lineEnd, b.prefix, b.info]));
+  eq('CRLF: their source has no CR in it', crBlocks.map((b) => b.source), lfBlocks.map((b) => b.source));
+  eq('CRLF: a callout block too', api.parseBlocks(crlf('> ```run\n> a\n>\n> b\n> ```'))[0].source, 'a\n\nb');
+  const edited = api.replaceBody(crlf('# t\n\n```run\nold\n```\n'), api.parseBlocks(crlf('# t\n\n```run\nold\n```\n'))[0], 'id: a\nresult:\n  exit: 0\n---\nnew\n\nlines');
+  eq('CRLF: an edit keeps every line ending', [bareLF(edited), api.parseBlocks(edited)[0].source], [false, 'id: a\nresult:\n  exit: 0\n---\nnew\n\nlines']);
+  eq('CRLF: headings are found', api.noteHeadings(crlf('---\ntags: x\n---\n# One\n\n## Two\n').split('\n')).map((h) => [h.line, h.level, h.text]), [[3, 1, 'One'], [5, 2, 'Two']]);
+  const chooser = crlf('```choose\nfor: 11111111-1111-4111-8111-111111111111\n```\n');
+  eq('CRLF: a chooser is read', api.parseChoosers(chooser)[0].forId, '11111111-1111-4111-8111-111111111111');
+  const picked = api.setChosen(chooser, '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222');
+  eq('CRLF: picking a way keeps the endings', [bareLF(picked), api.parseChoosers(picked)[0].chosen], [false, '22222222-2222-4222-8222-222222222222']);
+}
 eq('a code line that is just ">" outside a callout is kept', api.parseBlocks('```run\necho a \\\n>\n```')[0].source, 'echo a \\\n>');
 
 // The code file view's extensions
@@ -491,6 +508,7 @@ eq('no dependencies, never blocked', P.prerequisiteState('demo.md', dA).blocked,
   eq('a chooser in a callout keeps its prefix', api.setChosen('> ```choose\n> for: ' + id('1') + '\n> ```', id('1'), id('2')), '> ```choose\n> for: ' + id('1') + '\n> chosen: ' + id('2') + '\n> ```');
   eq('picked k3s: shown, but not locked', [P.currentWay(id('1'), 'choose.md').way.id, P.currentWay(id('1'), 'choose.md').locked], [id('2'), false]);
   eq('the other ways\' sections are hidden', P.hiddenSections('choose.md', cur), [section('### 2a. Create a kind cluster'), section('### 2c. Or use your own cluster')]);
+  eq('CRLF: the same sections are hidden', P.hiddenSections('choose.md', cur.replace(/\n/g, '\r\n')), P.hiddenSections('choose.md', cur));
   eq('the usual way and the other alternative aren\'t needed', [cWhy(cKind), cWhy(cOwn)], [['replaced:chosen'], ['replaced:chosen']]);
   eq('and say the chooser is set to another way', P.prerequisiteState('choose.md', cKind).waiting[0].summary.startsWith("it isn't needed: the chooser is set to the way at line"), true);
   eq('Run all takes the way picked', [P.onUnusedPath('choose.md', cK3s), P.onUnusedPath('choose.md', cK3sCheck), P.onUnusedPath('choose.md', cOwn), !!P.replacement('choose.md', cKind)], [false, false, true, true]);
