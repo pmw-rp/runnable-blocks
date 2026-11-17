@@ -184,8 +184,13 @@ function parseBlocks(text, infoRe = BLOCK_RE) {
         });
       }
       open = null;
+    } else if (line.startsWith(open.prefix)) {
+      open.body.push(line.slice(open.prefix.length));
     } else {
-      open.body.push(line.startsWith(open.prefix) ? line.slice(open.prefix.length) : line);
+      // A blank line in a callout is usually a bare ">": editors strip the trailing space, and
+      // replaceBody writes it that way. It's an empty line of code, not a ">" in the code.
+      const bare = open.prefix.replace(/[ \t]+$/, '');
+      open.body.push(bare && line.trimEnd() === bare ? '' : line);
     }
   }
   return blocks;
