@@ -179,6 +179,19 @@ eq('sibling deeper lines not matched', api.setHeaderValue('check:\n  run: |\n   
 // Content replacement
 eq('replaceBody restores callout prefix', api.replaceBody('> ```run\n> old\n> ```', { lineStart: 0, lineEnd: 2, prefix: '> ' }, 'id: a\n\n---\nx'), '> ```run\n> id: a\n>\n> ---\n> x\n> ```');
 
+// A blank line in a callout is usually a bare ">": editors strip the trailing space, and replaceBody
+// writes it that way. It's an empty line of code, not a ">" in the code.
+eq('blank callout line is an empty code line', api.parseBlocks('> ```run\n> lang: python\n> ---\n> import json\n>\n> print(1)\n> ```')[0].source,
+  'lang: python\n---\nimport json\n\nprint(1)');
+eq('blank callout line with a trailing space too', api.parseBlocks('> ```run\n> a\n> \n> b\n> ```')[0].source, 'a\n\nb');
+eq('blank line in a nested callout', api.parseBlocks('> > ```run\n> > a\n> >\n> > b\n> > ```')[0].source, 'a\n\nb');
+{
+  const text = '> ```run\n> old\n> ```';
+  const written = api.replaceBody(text, { lineStart: 0, lineEnd: 2, prefix: '> ' }, 'id: a\n---\nx\n\ny');
+  eq('replaceBody then parseBlocks gives the same body', api.parseBlocks(written)[0].source, 'id: a\n---\nx\n\ny');
+}
+eq('a code line that is just ">" outside a callout is kept', api.parseBlocks('```run\necho a \\\n>\n```')[0].source, 'echo a \\\n>');
+
 // The code file view's extensions
 eq('code extensions from the setting', api.codeExtensions(' .YAML, yml,sh\npy, , yml'), ['yaml', 'yml', 'sh', 'py']);
 eq('Markdown is never taken over', api.codeExtensions('md, yaml'), ['yaml']);
